@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Shooter
+Comment=Trackmania-inspired Top-Down Multiplayer Arena Shooter
+Exec=/home/tanmay/.local/bin/shooter
+Terminal=false
+Type=Application
+Categories=Game;ActionGame;
+Keywords=game;shooter;trackmania;multiplayer;vim;
+StartupNotify=true

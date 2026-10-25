@@ -1,0 +1,12 @@
+# Dependencies and build outputs
+node_modules/
+dist/
+target/
+.env
+
+# OpenCode repo instructions
+AGENTS.md
+
+# Logs and temps
+*.log
+.DS_Store
