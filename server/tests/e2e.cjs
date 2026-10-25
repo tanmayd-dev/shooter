@@ -31,11 +31,11 @@ async function testStaticFiles() {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
-        if (data.includes('game-canvas')) {
-          console.log('✓ / served index.html with game-canvas');
+        if (data.includes('webgl-canvas') && data.includes('hud-canvas')) {
+          console.log('✓ / served index.html with webgl-canvas and hud-canvas');
           resolve();
         } else {
-          reject(new Error(`Index.html does not contain game-canvas: ${data.slice(0, 200)}`));
+          reject(new Error(`Index.html does not contain webgl-canvas and hud-canvas: ${data.slice(0, 200)}`));
         }
       });
     }).on('error', reject);
@@ -62,8 +62,12 @@ async function testWebSocketMultiplayer() {
     ws1.onmessage = (event) => {
       const msg = JSON.parse(event.data);
       if (msg.type === 'LobbyUpdate') {
+        const yourId = msg.your_id || msg.yourId;
+        if (!yourId) {
+          return reject(new Error('Client 1 LobbyUpdate missing your_id'));
+        }
         roomCode = msg.room_code || msg.roomCode;
-        console.log(`✓ Lobby created with code: ${roomCode}`);
+        console.log(`✓ Lobby created with code: ${roomCode}, client 1 id: ${yourId}`);
         resolve();
       }
     };
@@ -86,8 +90,12 @@ async function testWebSocketMultiplayer() {
     ws2.onmessage = (event) => {
       const msg = JSON.parse(event.data);
       if (msg.type === 'LobbyUpdate') {
+        const yourId = msg.your_id || msg.yourId;
+        if (!yourId) {
+          return reject(new Error('Client 2 LobbyUpdate missing your_id'));
+        }
         if (msg.players.length === 2) {
-          console.log('✓ Client 2 joined room! Total players: 2');
+          console.log(`✓ Client 2 joined room! Total players: 2, client 2 id: ${yourId}`);
           resolve();
         }
       }

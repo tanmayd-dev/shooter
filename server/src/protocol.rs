@@ -91,6 +91,8 @@ fn default_car_type() -> String {
 #[serde(tag = "type")]
 pub enum ServerMessage {
     LobbyUpdate {
+        #[serde(alias = "yourId")]
+        your_id: String,
         #[serde(alias = "roomCode")]
         room_code: String,
         #[serde(alias = "isHost")]
@@ -267,6 +269,7 @@ mod tests {
     #[test]
     fn test_server_message_serialization() {
         let lobby = ServerMessage::LobbyUpdate {
+            your_id: "p1".into(),
             room_code: "NEON".into(),
             is_host: true,
             players: vec![LobbyPlayer {
@@ -283,7 +286,64 @@ mod tests {
 
         let serialized = serde_json::to_string(&lobby).unwrap();
         assert!(serialized.contains(r#""type":"LobbyUpdate""#));
+        assert!(serialized.contains(r#""your_id":"p1""#));
         assert!(serialized.contains(r#""room_code":"NEON""#));
         assert!(serialized.contains(r#""is_host":true"#));
+    }
+
+    #[test]
+    fn test_lobby_update_your_id_serde() {
+        // Test deserialization with snake_case "your_id"
+        let json_snake = r#"{
+            "type": "LobbyUpdate",
+            "your_id": "p_snake_123",
+            "room_code": "TEST",
+            "is_host": true,
+            "players": [],
+            "status": "waiting",
+            "map": "neon_stadium"
+        }"#;
+        let msg_snake: ServerMessage = serde_json::from_str(json_snake).unwrap();
+        match msg_snake {
+            ServerMessage::LobbyUpdate { your_id, .. } => {
+                assert_eq!(your_id, "p_snake_123");
+            }
+            _ => panic!("Expected LobbyUpdate"),
+        }
+
+        // Test deserialization with camelCase alias "yourId"
+        let json_camel = r#"{
+            "type": "LobbyUpdate",
+            "yourId": "p_camel_456",
+            "roomCode": "TEST",
+            "isHost": false,
+            "players": [],
+            "status": "waiting",
+            "map": "neon_stadium"
+        }"#;
+        let msg_camel: ServerMessage = serde_json::from_str(json_camel).unwrap();
+        match msg_camel {
+            ServerMessage::LobbyUpdate { your_id, is_host, .. } => {
+                assert_eq!(your_id, "p_camel_456");
+                assert!(!is_host);
+            }
+            _ => panic!("Expected LobbyUpdate"),
+        }
+
+        // Test serialization produces your_id and can round-trip
+        let msg_orig = ServerMessage::LobbyUpdate {
+            your_id: "p_roundtrip".into(),
+            room_code: "RT01".into(),
+            is_host: true,
+            players: vec![],
+            status: "waiting".into(),
+            map: "neon_stadium".into(),
+            countdown: None,
+        };
+        let serialized = serde_json::to_string(&msg_orig).unwrap();
+        assert!(serialized.contains(r#""your_id":"p_roundtrip""#));
+
+        let msg_deser: ServerMessage = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(msg_orig, msg_deser);
     }
 }

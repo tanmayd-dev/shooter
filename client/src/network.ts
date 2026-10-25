@@ -16,6 +16,8 @@ export interface ServerLobbyUpdate {
   roomCode?: string;
   is_host: boolean;
   isHost?: boolean;
+  your_id: string;
+  yourId?: string;
   players: ServerLobbyPlayer[];
   status: string;
   map: string;

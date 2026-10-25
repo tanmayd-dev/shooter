@@ -11,9 +11,9 @@ import { NetworkClient, ServerLobbyUpdate, ServerWorldState } from './network';
 import { CAR_CONFIGS } from './physics/configs.ts';
 import { InputController } from './physics/input.ts';
 import { stepVehicle } from './physics/vehicle.ts';
-import { GameRenderer } from './render/canvas';
 import { HUDRenderer } from './render/hud';
 import { ParticleSystem } from './render/particles';
+import { Renderer3D } from './render3d/scene';
 import {
   CarArchetype,
   CarState,
@@ -90,23 +90,34 @@ function createStadiumTrack(): StadiumTrack {
 // ============================================================================
 
 function main(): void {
-  const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
-  if (!canvas) throw new Error('Game canvas not found');
-
-  const resize = () => {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-  };
-  window.addEventListener('resize', resize);
-  resize();
+  const webglCanvas = document.getElementById('webgl-canvas') as HTMLCanvasElement;
+  const hudCanvas = document.getElementById('hud-canvas') as HTMLCanvasElement;
+  if (!webglCanvas || !hudCanvas) throw new Error('Game canvas elements not found');
 
   const particles = new ParticleSystem();
-  const renderer = new GameRenderer(canvas, particles);
+  const renderer3d = new Renderer3D(webglCanvas);
   const hud = new HUDRenderer();
   const inputController = new InputController('vim-arrows');
   const track = createStadiumTrack();
   const lobby = new LobbyUI();
   const network = new NetworkClient();
+
+  const resize = () => {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    webglCanvas.width = w;
+    webglCanvas.height = h;
+    hudCanvas.width = w;
+    hudCanvas.height = h;
+    renderer3d.resize(w, h);
+  };
+  window.addEventListener('resize', resize);
+  resize();
+
+  // Camera toggle (KeyC) handler
+  inputController.setCameraToggleCallback(() => {
+    renderer3d.toggleCameraMode();
+  });
 
   let activeProjectiles: Projectile[] = [];
   let matchActive = false;
@@ -275,8 +286,19 @@ function main(): void {
   });
 
   network.onLobbyUpdate = (msg: ServerLobbyUpdate) => {
+    // 1. Synchronize authoritative player ID from server
+    const serverAssignedId = msg.your_id || msg.yourId;
+    if (serverAssignedId) {
+      playerCar.id = serverAssignedId;
+    }
+
     const roomCode = msg.room_code || msg.roomCode || '';
     const isHost = msg.is_host ?? msg.isHost ?? false;
+
+    // In online room, purge offline bots completely!
+    if (isOnline && roomCode && roomCode !== 'LOCAL') {
+      allCars = [playerCar];
+    }
 
     // Convert server players to UI lobby players
     const players: LobbyPlayer[] = msg.players.map((p) => {
@@ -304,11 +326,21 @@ function main(): void {
   };
 
   network.onGameStart = (msg) => {
+    // In online match, strictly clear offline bots
+    if (isOnline) {
+      allCars = [playerCar];
+    }
     startMatchCountdown(msg.countdown || 3);
   };
 
   network.onWorldState = (snapshot: ServerWorldState) => {
     if (!matchActive) return;
+
+    // Prune cars that are no longer in server snapshot
+    const activeIds = new Set(snapshot.players.map((p) => p.id));
+    if (isOnline) {
+      allCars = allCars.filter((c) => c.isLocal || activeIds.has(c.id));
+    }
 
     // Update / reconcile remote players
     for (const p of snapshot.players) {
@@ -369,9 +401,9 @@ function main(): void {
         };
         allCars.push(remote);
       } else {
-        // Linear interpolation for smooth remote vehicle movement
-        remote.x += (p.x - remote.x) * 0.4;
-        remote.y += (p.y - remote.y) * 0.4;
+        // Smooth interpolation for remote vehicle movement
+        remote.x += (p.x - remote.x) * 0.45;
+        remote.y += (p.y - remote.y) * 0.45;
         remote.vx = p.vx;
         remote.vy = p.vy;
         remote.angle = p.angle;
@@ -383,6 +415,7 @@ function main(): void {
         remote.score = p.score;
         remote.kills = p.kills;
         remote.deaths = p.deaths;
+        remote.steer = p.steer;
       }
     }
 
@@ -409,6 +442,7 @@ function main(): void {
       playerCar.name = nickname;
       playerCar.archetype = archetype;
       if (network.getConnected()) {
+        allCars = [playerCar]; // Purge bots
         network.joinLobby(nickname, undefined, archetype);
       } else {
         localRoomState.code = `ARENA-${Math.floor(10 + Math.random() * 90)}`;
@@ -422,6 +456,7 @@ function main(): void {
       playerCar.name = nickname;
       playerCar.archetype = archetype;
       if (network.getConnected()) {
+        allCars = [playerCar]; // Purge bots
         network.joinLobby(nickname, code, archetype);
       } else {
         localRoomState.code = code;
@@ -486,7 +521,7 @@ function main(): void {
 
   // Combat impact handler
   const handleImpact = (_x: number, _y: number, trauma: number) => {
-    renderer.addScreenShake(trauma);
+    renderer3d.addScreenShake(trauma);
   };
 
   const handleKill = (killerName: string, victimName: string, weapon: string) => {
@@ -547,7 +582,7 @@ function main(): void {
       }
     }
 
-    // 2. Offline Bot Sparring AI (only active when offline or alone)
+    // 2. Offline Bot Sparring AI (only active when offline or alone in local mode)
     if (!isOnline) {
       for (const bot of [bot1, bot2]) {
         if (!bot.isAlive || !matchActive) continue;
@@ -620,9 +655,9 @@ function main(): void {
       handleKill
     );
 
-    // 6. Update Particles & Camera
+    // 6. Update Particles & 3D Camera
     particles.update(dt);
-    renderer.updateCamera(playerCar, dt);
+    renderer3d.updateCamera(playerCar, dt);
 
     // 7. Update Match Timer
     if (matchActive && matchTimeRemaining > 0) {
@@ -633,19 +668,21 @@ function main(): void {
       }
     }
 
-    // 8. Render Game Scene
-    renderer.render(track, allCars, activeProjectiles, dt);
+    // 8. Render 3D WebGL Scene
+    renderer3d.render(track, allCars, activeProjectiles, dt);
 
-    // 9. Render HUD Overlay
-    const ctx = canvas.getContext('2d')!;
+    // 9. Render 2D HUD Overlay on top (projecting 3D car coordinates to screen)
+    const ctx = hudCanvas.getContext('2d')!;
+    ctx.clearRect(0, 0, hudCanvas.width, hudCanvas.height);
     hud.render(
       ctx,
-      canvas.width,
-      canvas.height,
+      hudCanvas.width,
+      hudCanvas.height,
       playerCar,
       allCars,
       matchTimeRemaining,
-      countdown
+      countdown,
+      (car) => renderer3d.toScreen(car.x, car.y)
     );
 
     requestAnimationFrame(loop);

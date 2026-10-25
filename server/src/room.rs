@@ -141,6 +141,7 @@ impl Room {
         for p in &self.players {
             if let Some(ref sender) = p.sender {
                 let msg = ServerMessage::LobbyUpdate {
+                    your_id: p.id.clone(),
                     room_code: self.code.clone(),
                     is_host: p.is_host,
                     players: lobby_players.clone(),
@@ -511,5 +512,75 @@ mod tests {
         assert_eq!(room.players.len(), 1);
         assert_eq!(room.host_id, Some("p2".to_string()));
         assert!(room.players[0].is_host);
+    }
+
+    #[test]
+    fn test_lobby_update_your_id() {
+        let mut room = Room::new("CODE".to_string());
+        let (tx_a, mut rx_a) = mpsc::unbounded_channel();
+        let (tx_b, mut rx_b) = mpsc::unbounded_channel();
+
+        // 1. Player A joins: their LobbyUpdate must have your_id == "player_a_id"
+        let res_a = room.add_player("player_a_id".into(), "Alice".into(), "stadium".into(), Some(tx_a));
+        assert!(res_a.is_ok());
+
+        let msg_a = rx_a.try_recv().expect("Player A should receive LobbyUpdate");
+        match msg_a {
+            ServerMessage::LobbyUpdate { your_id, is_host, players, room_code, .. } => {
+                assert_eq!(your_id, "player_a_id");
+                assert!(is_host);
+                assert_eq!(room_code, "CODE");
+                assert_eq!(players.len(), 1);
+                assert_eq!(players[0].id, "player_a_id");
+            }
+            other => panic!("Expected LobbyUpdate, got {:?}", other),
+        }
+
+        // 2. Player B joins:
+        // - Player B receives LobbyUpdate with your_id == "player_b_id"
+        // - Player A receives updated LobbyUpdate with your_id == "player_a_id"
+        let res_b = room.add_player("player_b_id".into(), "Bob".into(), "desert".into(), Some(tx_b));
+        assert!(res_b.is_ok());
+
+        let msg_b = rx_b.try_recv().expect("Player B should receive LobbyUpdate");
+        match msg_b {
+            ServerMessage::LobbyUpdate { your_id, is_host, players, .. } => {
+                assert_eq!(your_id, "player_b_id");
+                assert!(!is_host);
+                assert_eq!(players.len(), 2);
+            }
+            other => panic!("Expected LobbyUpdate, got {:?}", other),
+        }
+
+        let msg_a2 = rx_a.try_recv().expect("Player A should receive updated LobbyUpdate");
+        match msg_a2 {
+            ServerMessage::LobbyUpdate { your_id, is_host, players, .. } => {
+                assert_eq!(your_id, "player_a_id");
+                assert!(is_host);
+                assert_eq!(players.len(), 2);
+            }
+            other => panic!("Expected LobbyUpdate, got {:?}", other),
+        }
+
+        // 3. Ready toggle: both receive their respective your_id
+        room.set_ready("player_b_id", true);
+
+        let msg_b_ready = rx_b.try_recv().expect("Player B should receive ready update");
+        match msg_b_ready {
+            ServerMessage::LobbyUpdate { your_id, players, .. } => {
+                assert_eq!(your_id, "player_b_id");
+                assert!(players.iter().any(|p| p.id == "player_b_id" && p.ready));
+            }
+            other => panic!("Expected LobbyUpdate, got {:?}", other),
+        }
+
+        let msg_a_ready = rx_a.try_recv().expect("Player A should receive ready update");
+        match msg_a_ready {
+            ServerMessage::LobbyUpdate { your_id, players, .. } => {
+                assert_eq!(your_id, "player_a_id");
+                assert!(players.iter().any(|p| p.id == "player_b_id" && p.ready));
+            }
+            other => panic!("Expected LobbyUpdate, got {:?}", other),
+        }
     }
 }

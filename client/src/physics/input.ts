@@ -58,6 +58,9 @@ export class InputController {
   private abilityMobility = false;
   private abilityUtility = false;
 
+  public cameraTogglePressed = false;
+  public onCameraToggle?: () => void;
+
   private boundKeyDown: (e: KeyboardEvent) => void;
   private boundKeyUp: (e: KeyboardEvent) => void;
   private boundBlur: () => void;
@@ -111,6 +114,49 @@ export class InputController {
     this.fireSpecial = false;
     this.abilityMobility = false;
     this.abilityUtility = false;
+    this.cameraTogglePressed = false;
+  }
+
+  /**
+   * Sets callback fired when camera toggle key (KeyC) is pressed.
+   */
+  public setCameraToggleCallback(callback: () => void): void {
+    this.onCameraToggle = callback;
+  }
+
+  /**
+   * Consumes and returns camera toggle state (resets flag to false).
+   */
+  public consumeCameraToggle(): boolean {
+    const pressed = this.cameraTogglePressed;
+    this.cameraTogglePressed = false;
+    return pressed;
+  }
+
+  /**
+   * Checks whether a specific key is currently tracked as pressed.
+   */
+  public isKeyPressed(keyOrCode: string): boolean {
+    return this.pressedKeys.has(keyOrCode) || this.pressedKeys.has(keyOrCode.toLowerCase());
+  }
+
+  /**
+   * Returns a readonly view of currently pressed keys.
+   */
+  public getPressedKeys(): ReadonlySet<string> {
+    return this.pressedKeys;
+  }
+
+  /**
+   * Checks whether an event target is an interactive user input field.
+   */
+  public isInputField(target: EventTarget | null): boolean {
+    if (!target) return false;
+    const el = target as HTMLElement & { isContentEditable?: boolean };
+    const tagName = el.tagName ? el.tagName.toUpperCase() : "";
+    if (tagName === "INPUT" || tagName === "TEXTAREA") return true;
+    if (Boolean(el.isContentEditable)) return true;
+    return false;
   }
 
   /**
@@ -133,36 +179,63 @@ export class InputController {
     const gameCodes = new Set([
       "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
       "KeyK", "KeyJ", "KeyH", "KeyL",
-      "KeyW", "KeyA", "KeyS", "KeyD", "KeyF",
+      "KeyW", "KeyA", "KeyS", "KeyD", "KeyF", "KeyC",
       "Semicolon", "Space",
     ]);
 
     if (gameCodes.has(code)) return true;
-    if (["k", "j", "h", "l", "w", "a", "s", "d", "f", ";"].includes(k)) return true;
+    if (["k", "j", "h", "l", "w", "a", "s", "d", "f", "c", ";"].includes(k)) return true;
     return false;
   }
 
-  private handleKeyDown(e: KeyboardEvent): void {
+  public handleKeyDown(e: KeyboardEvent): void {
+    // If target is an input field, do not preventDefault and do not capture keys!
+    if (this.isInputField(e.target)) {
+      return;
+    }
+
     if (this.filterConfig.preventDefault && this.isGameKey(e.code, e.key)) {
       e.preventDefault();
     }
+
+    if (e.code === "KeyC" || e.key.toLowerCase() === "c") {
+      this.cameraTogglePressed = true;
+      if (!e.repeat) {
+        this.onCameraToggle?.();
+      }
+    }
+
     this.pressedKeys.add(e.code);
     this.pressedKeys.add(e.key.toLowerCase());
   }
 
-  private handleKeyUp(e: KeyboardEvent): void {
+  public handleKeyUp(e: KeyboardEvent): void {
+    // If target is an input field, do not capture or modify keys
+    if (this.isInputField(e.target)) {
+      return;
+    }
+
+    if (e.code === "KeyC" || e.key.toLowerCase() === "c") {
+      this.cameraTogglePressed = false;
+    }
+
     this.pressedKeys.delete(e.code);
     this.pressedKeys.delete(e.key.toLowerCase());
   }
 
   private handleBlur(): void {
     this.pressedKeys.clear();
+    this.cameraTogglePressed = false;
   }
 
   /**
    * For tests and headless environments: programmatically simulate key press.
    */
   public simulateKeyDown(keyOrCode: string): void {
+    if (keyOrCode === "KeyC" || keyOrCode.toLowerCase() === "c") {
+      this.cameraTogglePressed = true;
+      this.onCameraToggle?.();
+    }
     this.pressedKeys.add(keyOrCode);
     this.pressedKeys.add(keyOrCode.toLowerCase());
   }
@@ -171,6 +244,9 @@ export class InputController {
    * For tests and headless environments: programmatically simulate key release.
    */
   public simulateKeyUp(keyOrCode: string): void {
+    if (keyOrCode === "KeyC" || keyOrCode.toLowerCase() === "c") {
+      this.cameraTogglePressed = false;
+    }
     this.pressedKeys.delete(keyOrCode);
     this.pressedKeys.delete(keyOrCode.toLowerCase());
   }

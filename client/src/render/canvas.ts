@@ -13,6 +13,8 @@ export interface Camera {
   trauma: number; // 0.0 to 1.0
 }
 
+export type CameraMode = 'chase' | 'stadium';
+
 export class GameRenderer {
   private mainCanvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -24,6 +26,7 @@ export class GameRenderer {
   private skidHeight: number = 3000;
 
   public camera: Camera = { x: 0, y: 0, zoom: 1.0, trauma: 0.0 };
+  public cameraMode: CameraMode = 'chase';
   public particles: ParticleSystem;
 
   // Track previous wheel positions per car ID to draw continuous skid strokes
@@ -62,12 +65,43 @@ export class GameRenderer {
   }
 
   /**
+   * Toggles between 3D chase camera and wide arena stadium camera.
+   */
+  public toggleCameraMode(): CameraMode {
+    this.cameraMode = this.cameraMode === 'chase' ? 'stadium' : 'chase';
+    return this.cameraMode;
+  }
+
+  /**
+   * Projects a world-space coordinate to viewport screen coordinates.
+   */
+  public toScreen(worldX: number, worldY: number): Vector2D {
+    return {
+      x: (worldX - this.camera.x) * this.camera.zoom + this.mainCanvas.width / 2,
+      y: (worldY - this.camera.y) * this.camera.zoom + this.mainCanvas.height / 2,
+    };
+  }
+
+  /**
    * Updates camera position and smooth zoom towards the focused vehicle.
    */
   public updateCamera(target: CarState | null, dt: number): void {
     // Decay screen shake
     if (this.camera.trauma > 0) {
       this.camera.trauma = Math.max(0, this.camera.trauma - dt * 1.8);
+    }
+
+    if (this.cameraMode === 'stadium') {
+      // Wide stadium overview cam: smooth lerp to stadium center and wide zoom
+      const arenaCenterX = 1800;
+      const arenaCenterY = 1200;
+      const targetZoom = 0.42;
+
+      const lerpSpeed = 5.0;
+      this.camera.x += (arenaCenterX - this.camera.x) * Math.min(1.0, dt * lerpSpeed);
+      this.camera.y += (arenaCenterY - this.camera.y) * Math.min(1.0, dt * lerpSpeed);
+      this.camera.zoom += (targetZoom - this.camera.zoom) * Math.min(1.0, dt * lerpSpeed);
+      return;
     }
 
     if (!target) return;
@@ -546,9 +580,7 @@ export class GameRenderer {
       this.renderEMPEffect(ctx, car);
     }
 
-    // 6. Draw Player Label & Health Tag above car
     ctx.restore();
-    this.renderCarHUDTag(ctx, car);
   }
 
   private renderCarWheels(ctx: CanvasRenderingContext2D, car: CarState): void {
@@ -892,35 +924,6 @@ export class GameRenderer {
       ctx.lineTo(x2, y2);
       ctx.stroke();
     }
-    ctx.restore();
-  }
-
-  private renderCarHUDTag(ctx: CanvasRenderingContext2D, car: CarState): void {
-    const screenX = (car.x - this.camera.x) * this.camera.zoom + this.mainCanvas.width / 2;
-    const screenY = (car.y - this.camera.y) * this.camera.zoom + this.mainCanvas.height / 2;
-
-    ctx.save();
-    ctx.translate(screenX, screenY - 38 * this.camera.zoom);
-
-    // Player name tag
-    ctx.font = 'bold 11px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillStyle = car.isLocal ? '#00f0ff' : '#ffffff';
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
-    ctx.shadowBlur = 4;
-    ctx.fillText(car.name, 0, 0);
-
-    // Compact health bar
-    const barW = 38 * this.camera.zoom;
-    const barH = 4 * this.camera.zoom;
-    const hpRatio = Math.max(0, car.health / car.maxHealth);
-
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-    ctx.fillRect(-barW / 2, 4, barW, barH);
-
-    ctx.fillStyle = hpRatio > 0.5 ? '#39ff14' : hpRatio > 0.25 ? '#ffaa00' : '#ff2244';
-    ctx.fillRect(-barW / 2, 4, barW * hpRatio, barH);
-
     ctx.restore();
   }
 

@@ -295,4 +295,36 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["status"], "ok");
     }
+
+    #[tokio::test]
+    async fn test_room_join_sends_lobby_update_with_your_id() {
+        let room_manager = RoomManager::new();
+        let (_code, handle) = room_manager.create_room().await;
+        let (client_tx, mut client_rx) = mpsc::unbounded_channel::<ServerMessage>();
+        let (reply_tx, reply_rx) = oneshot::channel();
+
+        let player_id = "p_test123".to_string();
+        handle
+            .command_tx
+            .send(RoomCommand::Join {
+                player_id: player_id.clone(),
+                name: "TestRunner".into(),
+                car_type: "stadium".into(),
+                sender: client_tx,
+                reply: reply_tx,
+            })
+            .unwrap();
+
+        let join_result = reply_rx.await.unwrap();
+        assert!(join_result.is_ok());
+
+        let msg = client_rx.recv().await.unwrap();
+        match msg {
+            ServerMessage::LobbyUpdate { your_id, is_host, .. } => {
+                assert_eq!(your_id, player_id);
+                assert!(is_host);
+            }
+            other => panic!("Expected LobbyUpdate, got {:?}", other),
+        }
+    }
 }

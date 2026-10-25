@@ -4,6 +4,12 @@ import {
 } from '../types';
 import { ARCHETYPE_CONFIGS } from '../physics/configs.ts';
 
+export type ScreenCoordProvider =
+  | Map<string, { x: number; y: number }>
+  | Record<string, { x: number; y: number }>
+  | ((car: CarState) => { x: number; y: number } | null | undefined)
+  | { cameraX: number; cameraY: number; zoom: number };
+
 export class HUDRenderer {
   private killfeed: KillfeedEntry[] = [];
   private readonly killfeedDuration: number = 4.5; // seconds
@@ -29,7 +35,8 @@ export class HUDRenderer {
     localCar: CarState | null,
     allCars: CarState[],
     matchTimeRemaining: number,
-    countdown: number | null
+    countdown: number | null,
+    screenCoordsProvider?: ScreenCoordProvider
   ): void {
     ctx.save();
 
@@ -47,7 +54,13 @@ export class HUDRenderer {
       this.renderCountdownOverlay(ctx, width, height, countdown);
     }
 
-    // 5. Local Car Telemetry & Controls HUD
+    // 5. 3D Projected Car Name Tags & Health Bars (Overlay pass, no double camera transform)
+    this.renderCarTags(ctx, width, height, allCars, screenCoordsProvider);
+
+    // 6. On-Screen Controls Legend in semi-transparent corner card
+    this.renderControlsLegend(ctx, width, height);
+
+    // 7. Local Car Telemetry & Controls HUD
     if (localCar) {
       // Bottom Right: Speedometer, Gear, RPM, Drift Slip Gauge
       this.renderSpeedometer(ctx, width, height, localCar);
@@ -264,6 +277,207 @@ export class HUDRenderer {
   }
 
   // ==========================================
+  // ON-SCREEN CONTROLS LEGEND CORNER CARD
+  // ==========================================
+  private renderControlsLegend(
+    ctx: CanvasRenderingContext2D,
+    _width: number,
+    height: number
+  ): void {
+    ctx.save();
+
+    // Semi-transparent corner card placed at bottom-left corner directly above health bar
+    const cardW = 264;
+    const cardH = 92;
+    const cardX = 16;
+    const cardY = height >= 450 ? height - 117 - 10 - cardH : 140;
+
+    // Semi-transparent glassmorphism container
+    ctx.fillStyle = 'rgba(10, 14, 22, 0.8)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.14)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.roundRect(cardX, cardY, cardW, cardH, 6);
+    ctx.fill();
+    ctx.stroke();
+
+    // Card Header
+    ctx.font = '900 10px monospace, system-ui';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = '#00f0ff';
+    ctx.fillText('⌨ CONTROLS', cardX + 12, cardY + 10);
+
+    // Subtle divider
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cardX + 10, cardY + 23);
+    ctx.lineTo(cardX + cardW - 10, cardY + 23);
+    ctx.stroke();
+
+    // Row 1: Right Hand (Steering & Momentum)
+    const row1Y = cardY + 30;
+    ctx.font = 'bold 9px monospace, system-ui';
+    ctx.fillStyle = '#88a0c0';
+    ctx.fillText('RIGHT HAND:', cardX + 12, row1Y);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('Vim HJKL / Arrows', cardX + 85, row1Y);
+    ctx.fillStyle = '#ffaa00';
+    ctx.fillText('(Drive & Drift)', cardX + 192, row1Y);
+
+    // Row 2: Left Hand (Combat & Abilities)
+    const row2Y = cardY + 48;
+    ctx.fillStyle = '#88a0c0';
+    ctx.fillText('LEFT HAND:', cardX + 12, row2Y);
+    ctx.fillStyle = '#00f0ff';
+    ctx.fillText('A', cardX + 85, row2Y);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('(Fire)', cardX + 94, row2Y);
+    ctx.fillStyle = '#ff4b1f';
+    ctx.fillText('S', cardX + 130, row2Y);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('(Special)', cardX + 139, row2Y);
+    ctx.fillStyle = '#39ff14';
+    ctx.fillText('D', cardX + 188, row2Y);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('(Boost)', cardX + 197, row2Y);
+    ctx.fillStyle = '#bc13fe';
+    ctx.fillText('F', cardX + 238, row2Y);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('(Gdg)', cardX + 246, row2Y);
+
+    // Row 3: Camera Toggle
+    const row3Y = cardY + 66;
+    ctx.fillStyle = '#88a0c0';
+    ctx.fillText('CAMERA:', cardX + 12, row3Y);
+    ctx.fillStyle = '#00f0ff';
+    ctx.fillText('C', cardX + 85, row3Y);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('(Toggle 3D Chase Cam / Stadium Cam)', cardX + 96, row3Y);
+
+    ctx.restore();
+  }
+
+  // ==========================================
+  // 3D PROJECTED CAR NAME TAGS & HEALTH BARS
+  // ==========================================
+  public renderCarTags(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    allCars: CarState[],
+    screenCoordsProvider?: ScreenCoordProvider
+  ): void {
+    if (!allCars || allCars.length === 0) return;
+
+    ctx.save();
+
+    for (const car of allCars) {
+      if (!car.isAlive) continue;
+
+      let screenPos: { x: number; y: number } | null | undefined = null;
+
+      if (typeof screenCoordsProvider === 'function') {
+        screenPos = screenCoordsProvider(car);
+      } else if (screenCoordsProvider instanceof Map) {
+        screenPos = screenCoordsProvider.get(car.id);
+      } else if (screenCoordsProvider && typeof (screenCoordsProvider as Record<string, unknown>).cameraX === 'number') {
+        const cam = screenCoordsProvider as { cameraX: number; cameraY: number; zoom: number };
+        screenPos = {
+          x: (car.x - cam.cameraX) * cam.zoom + width / 2,
+          y: (car.y - cam.cameraY) * cam.zoom + height / 2,
+        };
+      } else if (screenCoordsProvider && typeof screenCoordsProvider === 'object') {
+        screenPos = (screenCoordsProvider as Record<string, { x: number; y: number }>)[car.id];
+      }
+
+      if (!screenPos) {
+        const anyCar = car as unknown as {
+          screenX?: number;
+          screenY?: number;
+          screenPos?: { x: number; y: number };
+        };
+        if (typeof anyCar.screenX === 'number' && typeof anyCar.screenY === 'number') {
+          screenPos = { x: anyCar.screenX, y: anyCar.screenY };
+        } else if (anyCar.screenPos) {
+          screenPos = anyCar.screenPos;
+        }
+      }
+
+      if (!screenPos) continue;
+
+      const { x: sx, y: sy } = screenPos;
+      // Skip tags positioned outside the visible viewport
+      if (sx < -80 || sx > width + 80 || sy < -80 || sy > height + 80) continue;
+
+      const tagY = sy - 38;
+
+      // 1. Pilot Name Tag
+      ctx.font = 'bold 11px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      const displayName = car.isLocal ? `${car.name} (YOU)` : car.name;
+      const textMetrics = ctx.measureText(displayName);
+      const nameW = textMetrics.width;
+
+      // Dark backing capsule for high legibility over neon track lines
+      ctx.fillStyle = 'rgba(8, 12, 20, 0.8)';
+      ctx.strokeStyle = car.isLocal ? 'rgba(0, 240, 255, 0.4)' : 'rgba(255, 255, 255, 0.16)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(sx - nameW / 2 - 6, tagY - 8, nameW + 12, 16, 4);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = car.isLocal ? '#00f0ff' : '#ffffff';
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.9)';
+      ctx.shadowBlur = 4;
+      ctx.fillText(displayName, sx, tagY);
+      ctx.shadowBlur = 0;
+
+      // 2. Compact Health Bar underneath
+      const barW = 46;
+      const barH = 5;
+      const barX = sx - barW / 2;
+      const barY = tagY + 11;
+      const hpRatio = Math.max(0, Math.min(1.0, car.health / car.maxHealth));
+
+      // Bar container
+      ctx.fillStyle = 'rgba(10, 14, 22, 0.9)';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+      ctx.lineWidth = 1;
+      ctx.fillRect(barX, barY, barW, barH);
+      ctx.strokeRect(barX, barY, barW, barH);
+
+      // HP fill color
+      let hpColor = '#39ff14';
+      if (hpRatio < 0.25) hpColor = '#ff2244';
+      else if (hpRatio < 0.55) hpColor = '#ffaa00';
+
+      ctx.fillStyle = hpColor;
+      ctx.shadowColor = hpColor;
+      ctx.shadowBlur = 4;
+      ctx.fillRect(barX, barY, barW * hpRatio, barH);
+      ctx.shadowBlur = 0;
+
+      // Active Shield / Ram aura indicator
+      if (car.shieldActive) {
+        ctx.strokeStyle = '#00f0ff';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(barX - 1, barY - 1, barW + 2, barH + 2);
+      } else if (car.ramActive) {
+        ctx.strokeStyle = '#ff4b1f';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(barX - 1, barY - 1, barW + 2, barH + 2);
+      }
+    }
+
+    ctx.restore();
+  }
+
+  // ==========================================
   // ACTION ABILITY COOLDOWN BAR
   // ==========================================
   private renderAbilityBar(
@@ -276,40 +490,44 @@ export class HUDRenderer {
     const abilities = [
       {
         key: 'A',
-        title: config.primaryWeaponName,
+        name: 'BLASTER',
+        description: config.primaryWeaponName || 'Kinetic Cannon',
         cooldown: car.primaryCooldown,
-        maxCooldown: 0.35,
+        maxCooldown: config.primaryCooldown || 0.35,
         color: '#00f0ff',
       },
       {
         key: 'S',
-        title: config.specialAbilityName,
+        name: 'SPECIAL',
+        description: config.specialAbilityName || 'Special Weapon',
         cooldown: car.specialCooldown,
-        maxCooldown: car.specialMaxCooldown || 6.0,
+        maxCooldown: car.specialMaxCooldown || config.specialCooldown || 6.0,
         color: '#ff4b1f',
       },
       {
         key: 'D',
-        title: config.mobilityAbilityName,
+        name: 'BOOST',
+        description: config.mobilityAbilityName || 'Mobility Boost',
         cooldown: car.mobilityCooldown,
-        maxCooldown: car.mobilityMaxCooldown || 4.5,
+        maxCooldown: car.mobilityMaxCooldown || config.mobilityCooldown || 4.5,
         color: '#39ff14',
       },
       {
         key: 'F',
-        title: config.tacticalGadgetName,
+        name: 'GADGET',
+        description: config.tacticalGadgetName || 'Tactical Gadget',
         cooldown: car.gadgetCooldown,
-        maxCooldown: car.gadgetMaxCooldown || 8.0,
+        maxCooldown: car.gadgetMaxCooldown || config.utilityCooldown || 8.0,
         color: '#bc13fe',
       },
     ];
 
-    const slotW = 76;
-    const slotH = 68;
+    const slotW = 88;
+    const slotH = 78;
     const gap = 12;
     const totalW = abilities.length * slotW + (abilities.length - 1) * gap;
     const startX = width / 2 - totalW / 2;
-    const startY = height - 85;
+    const startY = height - 92;
 
     ctx.save();
 
@@ -317,50 +535,125 @@ export class HUDRenderer {
       const x = startX + idx * (slotW + gap);
       const y = startY;
       const isReady = ab.cooldown <= 0;
-      const progress = isReady ? 1.0 : 1.0 - ab.cooldown / ab.maxCooldown;
+      const progress = isReady ? 0 : Math.max(0, Math.min(1.0, ab.cooldown / ab.maxCooldown));
 
-      // Slot Backdrop
-      ctx.fillStyle = 'rgba(12, 16, 26, 0.85)';
-      ctx.strokeStyle = isReady ? ab.color : 'rgba(255, 255, 255, 0.15)';
-      ctx.lineWidth = isReady ? 2 : 1;
-      if (isReady) {
-        ctx.shadowColor = ab.color;
-        ctx.shadowBlur = 8;
-      }
-      ctx.roundRect(x, y, slotW, slotH, 5);
+      // 1. Slot Backdrop & Outer Glow
+      ctx.fillStyle = isReady ? 'rgba(12, 18, 30, 0.94)' : 'rgba(8, 11, 18, 0.88)';
+      ctx.beginPath();
+      ctx.roundRect(x, y, slotW, slotH, 6);
       ctx.fill();
-      ctx.stroke();
-      ctx.shadowBlur = 0;
 
-      // Cooldown bottom-to-top wipe
-      if (!isReady) {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
-        const wipeH = slotH * (1.0 - progress);
-        ctx.fillRect(x, y, slotW, wipeH);
+      if (isReady) {
+        // Distinct glowing READY border
+        ctx.strokeStyle = ab.color;
+        ctx.lineWidth = 2.5;
+        ctx.shadowColor = ab.color;
+        ctx.shadowBlur = 14;
+        ctx.stroke();
+        ctx.shadowBlur = 0;
 
-        // Numeric cooldown text
-        ctx.font = 'bold 15px monospace, system-ui';
-        ctx.textAlign = 'center';
-        ctx.fillStyle = '#ffffff';
-        ctx.fillText(`${ab.cooldown.toFixed(1)}s`, x + slotW / 2, y + slotH / 2 + 6);
+        // Top accent line
+        ctx.fillStyle = ab.color;
+        ctx.fillRect(x + 8, y, slotW - 16, 2.5);
+      } else {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
       }
 
-      // Keybind Badge Pill: [A], [S], [D], [F]
-      ctx.fillStyle = isReady ? ab.color : 'rgba(255, 255, 255, 0.2)';
-      ctx.fillRect(x + 6, y + 6, 20, 16);
+      // 2. Keybind Badge Pill: [A], [S], [D], [F]
+      const keyW = 22;
+      const keyH = 18;
+      const keyX = x + 6;
+      const keyY = y + 6;
 
-      ctx.font = 'bold 11px monospace, system-ui';
-      ctx.textAlign = 'center';
-      ctx.fillStyle = isReady ? '#000000' : '#ffffff';
-      ctx.fillText(ab.key, x + 16, y + 18);
+      ctx.fillStyle = isReady ? ab.color : 'rgba(255, 255, 255, 0.16)';
+      ctx.beginPath();
+      ctx.roundRect(keyX, keyY, keyW, keyH, 3);
+      ctx.fill();
 
-      // Ability Name Label
-      ctx.font = 'bold 9px system-ui, sans-serif';
+      ctx.font = '900 11px monospace, system-ui';
       ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = isReady ? '#050a12' : '#ffffff';
+      ctx.fillText(ab.key, keyX + keyW / 2, keyY + keyH / 2 + 0.5);
+
+      // 3. Top-Right Glowing "READY" Badge
+      if (isReady) {
+        const readyBadgeW = 42;
+        const readyBadgeH = 16;
+        const readyBadgeX = x + slotW - readyBadgeW - 6;
+        const readyBadgeY = y + 7;
+
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.strokeStyle = ab.color;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.roundRect(readyBadgeX, readyBadgeY, readyBadgeW, readyBadgeH, 3);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.font = '900 8.5px monospace, system-ui';
+        ctx.fillStyle = ab.color;
+        ctx.shadowColor = ab.color;
+        ctx.shadowBlur = 6;
+        ctx.fillText('READY', readyBadgeX + readyBadgeW / 2, readyBadgeY + readyBadgeH / 2 + 0.5);
+        ctx.shadowBlur = 0;
+      }
+
+      // 4. Primary Slot Action Name ([A] BLASTER / [S] SPECIAL / [D] BOOST / [F] GADGET)
+      ctx.font = '900 12.5px monospace, system-ui';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
       ctx.fillStyle = isReady ? '#ffffff' : '#8899aa';
-      // Truncate long names for slot
-      const shortName = ab.title.length > 11 ? ab.title.substring(0, 10) + '..' : ab.title;
-      ctx.fillText(shortName.toUpperCase(), x + slotW / 2, y + slotH - 8);
+      ctx.fillText(ab.name, x + slotW / 2, y + 36);
+
+      // 5. Specific Archetype Ability Description
+      ctx.font = 'bold 8.5px system-ui, sans-serif';
+      ctx.fillStyle = isReady ? ab.color : '#556677';
+      const cleanSub = ab.description.length > 13 ? ab.description.substring(0, 12) + '..' : ab.description;
+      ctx.fillText(cleanSub.toUpperCase(), x + slotW / 2, y + 54);
+
+      // 6. Dark translucent wipe overlay showing remaining cooldown countdown (e.g. 2.4s)
+      if (!isReady) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.roundRect(x, y, slotW, slotH, 6);
+        ctx.clip();
+
+        // Dark translucent overlay wiping over slot
+        ctx.fillStyle = 'rgba(6, 9, 16, 0.76)';
+        const wipeH = slotH * progress;
+        ctx.fillRect(x, y + slotH - wipeH, slotW, wipeH);
+
+        // Bright wipe progress line
+        ctx.strokeStyle = ab.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x, y + slotH - wipeH);
+        ctx.lineTo(x + slotW, y + slotH - wipeH);
+        ctx.stroke();
+
+        // Dark high-contrast backing pill for countdown text
+        const cdText = `${ab.cooldown.toFixed(1)}s`;
+        ctx.font = '900 16px monospace, system-ui';
+        const tw = ctx.measureText(cdText).width;
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.roundRect(x + slotW / 2 - tw / 2 - 7, y + 27, tw + 14, 22, 4);
+        ctx.fill();
+        ctx.stroke();
+
+        // High contrast countdown number
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(cdText, x + slotW / 2, y + 38);
+
+        ctx.restore();
+      }
     });
 
     ctx.restore();
