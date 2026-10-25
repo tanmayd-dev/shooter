@@ -538,8 +538,9 @@ export class Track3D {
   // ==========================================================================
   // JUMP RAMPS / CHEVRONS
   // ==========================================================================
+  // JUMP RAMPS (High-speed stadium launches with neon rails)
+  // ==========================================================================
   private buildJumpRamps(): void {
-    // Strategic jump ramp placements on the high-speed stadium straights
     const rampLocations = [
       { x: 1950, z: 380, angle: 0, width: 85, length: 110, height: 18 },
       { x: 1950, z: 2400 - 380, angle: Math.PI, width: 85, length: 110, height: 18 },
@@ -562,40 +563,64 @@ export class Track3D {
       rampGroup.position.set(r.x, 0, r.z);
       rampGroup.rotation.y = -r.angle;
 
-      // Wedge geometry using ExtrudeGeometry with a right-angled triangle profile
-      const shape = new THREE.Shape();
-      shape.moveTo(0, 0);
-      shape.lineTo(0, r.height);
-      shape.lineTo(r.length, 0);
-      shape.closePath();
+      const halfL = r.length / 2;
+      const halfW = r.width / 2;
+      const H = r.height;
 
-      const extrudeSettings: THREE.ExtrudeGeometryOptions = {
-        steps: 1,
-        depth: r.width,
-        bevelEnabled: false,
-      };
+      // 1. Build precisely aligned right-triangular wedge prism
+      const positions: number[] = [
+        // Inclined drive slope (top)
+        -halfL, 0, -halfW,   -halfL, 0,  halfW,    halfL, H, -halfW,
+         halfL, H, -halfW,   -halfL, 0,  halfW,    halfL, H,  halfW,
 
-      const wedgeGeo = this.registerGeometry(new THREE.ExtrudeGeometry(shape, extrudeSettings));
+        // Vertical back face (under launch lip)
+         halfL, 0, -halfW,    halfL, H, -halfW,    halfL, 0,  halfW,
+         halfL, 0,  halfW,    halfL, H, -halfW,    halfL, H,  halfW,
+
+        // Bottom face (tarmac contact)
+        -halfL, 0, -halfW,    halfL, 0, -halfW,   -halfL, 0,  halfW,
+        -halfL, 0,  halfW,    halfL, 0, -halfW,    halfL, 0,  halfW,
+
+        // Left flank triangle
+        -halfL, 0, -halfW,    halfL, H, -halfW,    halfL, 0, -halfW,
+
+        // Right flank triangle
+        -halfL, 0,  halfW,    halfL, 0,  halfW,    halfL, H,  halfW,
+      ];
+
+      const wedgeGeo = this.registerGeometry(new THREE.BufferGeometry());
+      wedgeGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      wedgeGeo.computeVertexNormals();
+
       const wedgeMesh = new THREE.Mesh(wedgeGeo, rampMat);
-      wedgeMesh.rotation.y = Math.PI / 2;
-      wedgeMesh.position.set(r.width / 2, 0, -r.length / 2);
       wedgeMesh.castShadow = true;
       wedgeMesh.receiveShadow = true;
       rampGroup.add(wedgeMesh);
 
-      // Glowing neon edge rails along both wedge flanks
-      const flankGeo = this.registerGeometry(new THREE.CylinderGeometry(1.2, 1.2, Math.hypot(r.length, r.height), 8));
-      const flankAngle = Math.atan2(r.height, r.length);
+      // 2. Perfectly aligned neon rails along left & right incline edges
+      const slopeLen = Math.hypot(r.length, H);
+      const pitchAngle = Math.atan2(H, r.length);
 
-      const leftFlank = new THREE.Mesh(flankGeo, neonRampMat);
-      leftFlank.position.set(-r.width / 2, r.height / 2, 0);
-      leftFlank.rotation.x = Math.PI / 2 - flankAngle;
-      rampGroup.add(leftFlank);
+      const railGeo = this.registerGeometry(new THREE.CylinderGeometry(1.2, 1.2, slopeLen, 8));
 
-      const rightFlank = new THREE.Mesh(flankGeo, neonRampMat);
-      rightFlank.position.set(r.width / 2, r.height / 2, 0);
-      rightFlank.rotation.x = Math.PI / 2 - flankAngle;
-      rampGroup.add(rightFlank);
+      // Left incline rail
+      const leftRail = new THREE.Mesh(railGeo, neonRampMat);
+      leftRail.position.set(0, H / 2, -halfW);
+      leftRail.rotation.z = -pitchAngle + Math.PI / 2;
+      rampGroup.add(leftRail);
+
+      // Right incline rail
+      const rightRail = new THREE.Mesh(railGeo, neonRampMat);
+      rightRail.position.set(0, H / 2, halfW);
+      rightRail.rotation.z = -pitchAngle + Math.PI / 2;
+      rampGroup.add(rightRail);
+
+      // Launch lip neon strip across the top edge
+      const lipGeo = this.registerGeometry(new THREE.CylinderGeometry(1.4, 1.4, r.width, 8));
+      const lipRail = new THREE.Mesh(lipGeo, neonRampMat);
+      lipRail.position.set(halfL, H, 0);
+      lipRail.rotation.x = Math.PI / 2;
+      rampGroup.add(lipRail);
 
       this.group.add(rampGroup);
     }

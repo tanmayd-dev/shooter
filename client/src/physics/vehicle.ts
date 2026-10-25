@@ -9,7 +9,7 @@
  * - Arena boundary clamping and obstacle barrier collisions
  */
 
-import type { ArenaBounds, Barrier, CarConfig, CarType, InputState, VehicleState } from "../types.ts";
+import type { ArenaBounds, Barrier, CarConfig, CarType, InputState, StadiumTrack, VehicleState } from "../types.ts";
 import { DEFAULT_ARENA_BOUNDS, getCarConfig, PHYSICS_CONSTANTS } from "./configs.ts";
 
 // ============================================================================
@@ -261,6 +261,162 @@ export function resolveBarrierCollisions(
   return anyBounced;
 }
 
+/**
+ * Resolves vehicle collisions with Trackmania stadium outer/inner polygon borders and chicane barriers.
+ */
+export function resolveTrackCollisions(
+  state: VehicleState,
+  track: StadiumTrack,
+  hitboxRadius: number = 22,
+  restitution: number = PHYSICS_CONSTANTS.wallElasticRestitution,
+  tangentialRetention: number = PHYSICS_CONSTANTS.wallTangentialRetention
+): boolean {
+  let anyBounced = false;
+
+  // 1. Collide against outer stadium border polygon
+  if (track.outerBorder && track.outerBorder.length > 2) {
+    const pts = track.outerBorder;
+    for (let i = 0; i < pts.length; i++) {
+      const p1 = pts[i];
+      const p2 = pts[(i + 1) % pts.length];
+      if (resolveSegmentWallCollision(state, p1, p2, hitboxRadius, restitution, tangentialRetention, false)) {
+        anyBounced = true;
+      }
+    }
+  }
+
+  // 2. Collide against inner stadium island polygon
+  if (track.innerBorder && track.innerBorder.length > 2) {
+    const pts = track.innerBorder;
+    for (let i = 0; i < pts.length; i++) {
+      const p1 = pts[i];
+      const p2 = pts[(i + 1) % pts.length];
+      if (resolveSegmentWallCollision(state, p1, p2, hitboxRadius, restitution, tangentialRetention, true)) {
+        anyBounced = true;
+      }
+    }
+  }
+
+  // 3. Collide against chicane barriers (center x, y, width, height)
+  if (track.barriers) {
+    for (const b of track.barriers) {
+      const minX = b.x - b.width / 2;
+      const maxX = b.x + b.width / 2;
+      const minY = b.y - b.height / 2;
+      const maxY = b.y + b.height / 2;
+
+      const closestX = Math.max(minX, Math.min(state.x, maxX));
+      const closestY = Math.max(minY, Math.min(state.y, maxY));
+
+      const dx = state.x - closestX;
+      const dy = state.y - closestY;
+      const distSq = dx * dx + dy * dy;
+
+      if (distSq < hitboxRadius * hitboxRadius) {
+        const dist = Math.sqrt(distSq);
+        let nx = 0;
+        let ny = 0;
+        let pen = hitboxRadius;
+
+        if (dist > 1e-4) {
+          nx = dx / dist;
+          ny = dy / dist;
+          pen = hitboxRadius - dist;
+        } else {
+          // Inside: push to nearest edge
+          const dLeft = Math.abs(state.x - minX);
+          const dRight = Math.abs(maxX - state.x);
+          const dTop = Math.abs(state.y - minY);
+          const dBottom = Math.abs(maxY - state.y);
+          const m = Math.min(dLeft, dRight, dTop, dBottom);
+          if (m === dLeft) { nx = -1; pen = dLeft + hitboxRadius; }
+          else if (m === dRight) { nx = 1; pen = dRight + hitboxRadius; }
+          else if (m === dTop) { ny = -1; pen = dTop + hitboxRadius; }
+          else { ny = 1; pen = dBottom + hitboxRadius; }
+        }
+
+        state.x += nx * pen;
+        state.y += ny * pen;
+
+        const bounce = resolveWallBounce(
+          { vx: state.vx, vy: state.vy },
+          { x: nx, y: ny },
+          restitution,
+          tangentialRetention
+        );
+        if (bounce.bounced) {
+          state.vx = bounce.vx;
+          state.vy = bounce.vy;
+          anyBounced = true;
+        }
+      }
+    }
+  }
+
+  return anyBounced;
+}
+
+function resolveSegmentWallCollision(
+  state: VehicleState,
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+  hitboxRadius: number,
+  restitution: number,
+  tangentialRetention: number,
+  isInner: boolean
+): boolean {
+  const segX = p2.x - p1.x;
+  const segY = p2.y - p1.y;
+  const segLenSq = segX * segX + segY * segY;
+  if (segLenSq < 1e-4) return false;
+
+  const t = Math.max(0, Math.min(1, ((state.x - p1.x) * segX + (state.y - p1.y) * segY) / segLenSq));
+  const projX = p1.x + t * segX;
+  const projY = p1.y + t * segY;
+
+  const dx = state.x - projX;
+  const dy = state.y - projY;
+  const distSq = dx * dx + dy * dy;
+
+  if (distSq < hitboxRadius * hitboxRadius) {
+    const dist = Math.sqrt(distSq);
+    let nx = 0;
+    let ny = 0;
+    let pen = hitboxRadius;
+
+    if (dist > 1e-4) {
+      nx = dx / dist;
+      ny = dy / dist;
+      pen = hitboxRadius - dist;
+    } else {
+      const segLen = Math.sqrt(segLenSq);
+      nx = -segY / segLen;
+      ny = segX / segLen;
+      if (isInner) {
+        nx = -nx;
+        ny = -ny;
+      }
+      pen = hitboxRadius;
+    }
+
+    state.x += nx * pen;
+    state.y += ny * pen;
+
+    const bounce = resolveWallBounce(
+      { vx: state.vx, vy: state.vy },
+      { x: nx, y: ny },
+      restitution,
+      tangentialRetention
+    );
+    if (bounce.bounced) {
+      state.vx = bounce.vx;
+      state.vy = bounce.vy;
+      return true;
+    }
+  }
+  return false;
+}
+
 // ============================================================================
 // Vehicle Simulation Engine
 // ============================================================================
@@ -376,8 +532,20 @@ export function stepVehicle(
   }
 
   // 6. Longitudinal Dynamics (Throttle, Brake, Coast, Reverse)
-  if (input.throttle > 0 && !input.brake) {
-    // Forward acceleration
+  if (input.throttle > 0 && input.brake) {
+    // TRACKMANIA POWER-SLIDE / DRIFT BRAKE:
+    // Holding gas while tapping/holding brake breaks grip into a slide while keeping forward momentum!
+    const forwardAccel = config.acceleration * Math.min(1.0, Math.max(0, input.throttle)) * 0.9;
+    if (vParallel < config.maxSpeed) {
+      vParallel += forwardAccel * dt;
+      if (vParallel > config.maxSpeed) {
+        vParallel = config.maxSpeed;
+      }
+    }
+    // Gentle drift scrub rather than dead stop
+    vParallel = Math.max(50, vParallel - 120 * dt);
+  } else if (input.throttle > 0) {
+    // Full forward acceleration
     const forwardAccel = config.acceleration * Math.min(1.0, Math.max(0, input.throttle));
     if (vParallel < config.maxSpeed) {
       vParallel += forwardAccel * dt;
@@ -389,7 +557,7 @@ export function stepVehicle(
       vParallel -= (vParallel - config.maxSpeed) * 4.0 * dt;
     }
   } else if (input.brake) {
-    if (vParallel > 15) {
+    if (vParallel > 20) {
       // High-speed braking deceleration
       vParallel = Math.max(0, vParallel - PHYSICS_CONSTANTS.brakeDeceleration * dt);
     } else {

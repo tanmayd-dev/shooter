@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "tsc --noEmit && node --test src/physics/vehicle.test.ts src/physics/input.test.ts src/render3d/render3d.test.ts tests/regression.test.ts"
   },
   "devDependencies": {
     "typescript": "^5.7.0",

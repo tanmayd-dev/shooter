@@ -1,4 +1,4 @@
-import { CarArchetype } from '../types';
+import type { CarArchetype } from '../types.ts';
 
 export type ParticleType =
   | 'tire_smoke'

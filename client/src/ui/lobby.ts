@@ -11,6 +11,7 @@ export interface LobbyCallbacks {
   onSelectCar: (archetype: CarArchetype) => void;
   onToggleReady: (isReady: boolean) => void;
   onStartMatch: () => void;
+  onStartSolo?: (nickname: string, archetype: CarArchetype) => void;
 }
 
 export class LobbyUI {
@@ -105,9 +106,11 @@ export class LobbyUI {
     // Update Host Start Button
     const startBtn = this.container.querySelector<HTMLButtonElement>('#start-btn');
     if (startBtn) {
-      startBtn.style.display = this.isHost ? 'inline-block' : 'none';
-      const allReady = room.players.length > 0 && room.players.every((p: LobbyPlayer) => p.isReady);
+      const isLocal = !room.code || room.code === 'LOCAL' || room.code.startsWith('ARENA-');
+      startBtn.style.display = (this.isHost || isLocal) ? 'inline-block' : 'none';
+      const allReady = isLocal || (room.players.length > 0 && room.players.every((p: LobbyPlayer) => p.isReady));
       startBtn.disabled = !allReady;
+      startBtn.textContent = isLocal ? 'START PRACTICE MATCH' : 'START MATCH';
       startBtn.title = allReady ? 'Start the match' : 'All players must be ready';
     }
 
@@ -147,6 +150,7 @@ export class LobbyUI {
               <div class="divider">OR</div>
 
               <button id="create-btn" class="cyber-button primary full-width">CREATE NEW ROOM</button>
+              <button id="solo-btn" class="cyber-button success full-width" style="margin-top: 10px; background: linear-gradient(135deg, #00f0ff, #0077b6); color: #0d0f17; font-weight: 700; border: none; padding: 12px; cursor: pointer; border-radius: 4px; letter-spacing: 1px;">PRACTICE / SOLO PLAY</button>
             </div>
 
             <!-- Connected Players Roster -->
@@ -255,6 +259,19 @@ export class LobbyUI {
         const nick = this.getNickname();
         if (this.callbacks.onCreateRoom) {
           this.callbacks.onCreateRoom(nick, this.selectedArchetype);
+        }
+      });
+    }
+
+    // Practice / Solo Play
+    const soloBtn = this.container.querySelector<HTMLButtonElement>('#solo-btn');
+    if (soloBtn) {
+      soloBtn.addEventListener('click', () => {
+        const nick = this.getNickname();
+        if (this.callbacks.onStartSolo) {
+          this.callbacks.onStartSolo(nick, this.selectedArchetype);
+        } else if (this.callbacks.onStartMatch) {
+          this.callbacks.onStartMatch();
         }
       });
     }

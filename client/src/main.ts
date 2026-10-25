@@ -10,7 +10,7 @@ import { firePrimaryWeapon, updateProjectiles } from './combat/weapons';
 import { NetworkClient, ServerLobbyUpdate, ServerWorldState } from './network';
 import { CAR_CONFIGS } from './physics/configs.ts';
 import { InputController } from './physics/input.ts';
-import { stepVehicle } from './physics/vehicle.ts';
+import { resolveTrackCollisions, stepVehicle } from './physics/vehicle.ts';
 import { HUDRenderer } from './render/hud';
 import { ParticleSystem } from './render/particles';
 import { Renderer3D } from './render3d/scene';
@@ -131,7 +131,7 @@ function main(): void {
     id: `pilot-${Math.floor(1000 + Math.random() * 9000)}`,
     name: 'PILOT-01',
     archetype: 'stadium',
-    x: 600,
+    x: 550,
     y: 400,
     vx: 0,
     vy: 0,
@@ -176,8 +176,8 @@ function main(): void {
     id: 'bot-desert',
     name: 'CRUSHER',
     archetype: 'desert',
-    x: 750,
-    y: 350,
+    x: 950,
+    y: 320,
     vx: 0,
     vy: 0,
     angle: 0,
@@ -220,8 +220,8 @@ function main(): void {
     id: 'bot-rally',
     name: 'DRIFT-KING',
     archetype: 'rally',
-    x: 750,
-    y: 450,
+    x: 1150,
+    y: 480,
     vx: 0,
     vy: 0,
     angle: 0,
@@ -486,11 +486,23 @@ function main(): void {
         lobby.updateRoom(localRoomState, playerCar.id);
       }
     },
+    onStartSolo: (nickname, archetype) => {
+      sfx.ensureContext();
+      playerCar.name = nickname;
+      playerCar.archetype = archetype;
+      const cfg = CAR_CONFIGS[archetype];
+      playerCar.health = cfg.maxHealth;
+      playerCar.maxHealth = cfg.maxHealth;
+      allCars = [playerCar, bot1, bot2];
+      startMatchCountdown(3);
+    },
     onStartMatch: () => {
       sfx.ensureContext();
-      if (network.getConnected()) {
+      const inServerRoom = isOnline && network.getConnected() && localRoomState.code && localRoomState.code !== 'LOCAL';
+      if (inServerRoom) {
         network.startGame();
       } else {
+        allCars = [playerCar, bot1, bot2];
         startMatchCountdown(3);
       }
     },
@@ -567,7 +579,8 @@ function main(): void {
 
       // Combat actions:
       if (input.firePrimary) {
-        firePrimaryWeapon(playerCar, particles);
+        const res = firePrimaryWeapon(playerCar, particles);
+        if (res) activeProjectiles.push(res.projectile);
       }
       if (input.fireSpecial) {
         const res = activateSpecialAbility(playerCar, allCars, particles, handleImpact, handleKill);
@@ -582,8 +595,9 @@ function main(): void {
       }
     }
 
-    // 2. Offline Bot Sparring AI (only active when offline or alone in local mode)
-    if (!isOnline) {
+    // 2. Offline Bot Sparring AI (runs whenever bots are in match)
+    const inServerRoom = isOnline && network.getConnected() && localRoomState.code && localRoomState.code !== 'LOCAL';
+    if (!inServerRoom) {
       for (const bot of [bot1, bot2]) {
         if (!bot.isAlive || !matchActive) continue;
         const bConfig = CAR_CONFIGS[bot.archetype];
@@ -614,7 +628,8 @@ function main(): void {
         stepVehicle(bot, botInput, bConfig, dt);
 
         if (botInput.firePrimary) {
-          firePrimaryWeapon(bot, particles);
+          const res = firePrimaryWeapon(bot, particles);
+          if (res) activeProjectiles.push(res.projectile);
         }
       }
     }
@@ -628,7 +643,8 @@ function main(): void {
         const bdx = car.x - pad.x;
         const bdy = car.y - pad.y;
         if (Math.abs(bdx) < pad.width / 2 + 15 && Math.abs(bdy) < pad.height / 2 + 15) {
-          if (!car.boostActive) {
+          const forwardDot = Math.cos(car.angle - pad.angle);
+          if (forwardDot > -0.2 && !car.boostActive) {
             car.boostActive = true;
             car.boostDuration = 1.2;
             const force = pad.force ?? 450;
@@ -641,7 +657,12 @@ function main(): void {
       }
     }
 
-    // 4. Resolve Car Collisions & Ram Overdrive (local simulation/prediction)
+    // 4. Resolve Environment & Car Collisions
+    for (const car of allCars) {
+      if (car.isAlive) {
+        resolveTrackCollisions(car, track, car.archetype === 'desert' ? 24 : 20);
+      }
+    }
     resolveCarCollisions(allCars, particles, handleImpact, handleKill);
 
     // 5. Update Projectiles & Combat FX

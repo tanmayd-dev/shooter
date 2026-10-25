@@ -1,4 +1,4 @@
-import { CarArchetype } from '../types';
+import type { CarArchetype } from '../types.ts';
 
 /**
  * Procedural Web Audio API Synthesizer
@@ -35,6 +35,7 @@ class SoundEngine {
    * Initializes or resumes the AudioContext on user gesture.
    */
   public ensureContext(): AudioContext | null {
+    if (typeof window === 'undefined') return null;
     if (!this.ctx) {
       const AudioCtxClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (!AudioCtxClass) return null;

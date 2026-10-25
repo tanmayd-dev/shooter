@@ -1,6 +1,6 @@
-import { GunShot, HitSound, ExplosionSound } from '../audio/sfx';
-import { ParticleSystem } from '../render/particles';
-import { CarState, Projectile, StadiumTrack } from '../types';
+import { GunShot, HitSound, ExplosionSound } from '../audio/sfx.ts';
+import { ParticleSystem } from '../render/particles.ts';
+import type { CarState, Projectile, StadiumTrack } from '../types.ts';
 
 let nextProjectileId = 1;
 
