@@ -36,10 +36,18 @@ pub enum ClientMessage {
         ability_mobility: bool,
         #[serde(default, alias = "abilityUtility")]
         ability_utility: bool,
+        #[serde(default)]
+        turnaround: bool,
     },
     Ping {
         #[serde(alias = "clientTime")]
         client_time: u64,
+    },
+    VoiceSignal {
+        #[serde(alias = "targetPlayerId")]
+        target_player_id: String,
+        #[serde(alias = "signalData")]
+        signal_data: String,
     },
 }
 
@@ -53,6 +61,7 @@ pub struct PlayerInput {
     pub fire_special: bool,
     pub ability_mobility: bool,
     pub ability_utility: bool,
+    pub turnaround: bool,
 }
 
 impl ClientMessage {
@@ -67,6 +76,7 @@ impl ClientMessage {
                 fire_special,
                 ability_mobility,
                 ability_utility,
+                turnaround,
             } => Some(PlayerInput {
                 sequence: *sequence,
                 throttle: *throttle,
@@ -76,6 +86,7 @@ impl ClientMessage {
                 fire_special: *fire_special,
                 ability_mobility: *ability_mobility,
                 ability_utility: *ability_utility,
+                turnaround: *turnaround,
             }),
             _ => None,
         }
@@ -84,6 +95,18 @@ impl ClientMessage {
 
 fn default_car_type() -> String {
     "stadium".to_string()
+}
+
+fn default_round() -> u32 {
+    1
+}
+
+fn default_total_rounds() -> u32 {
+    3
+}
+
+fn default_match_timer() -> f32 {
+    180.0
 }
 
 /// Server to client protocol messages.
@@ -102,12 +125,22 @@ pub enum ServerMessage {
         map: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         countdown: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        round: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none", alias = "totalRounds")]
+        total_rounds: Option<u32>,
     },
     GameStart {
         map: String,
         #[serde(alias = "tickRate")]
         tick_rate: u32,
         countdown: u32,
+        #[serde(default = "default_round", alias = "round")]
+        round: u32,
+        #[serde(default = "default_total_rounds", alias = "totalRounds")]
+        total_rounds: u32,
+        #[serde(default = "default_match_timer", alias = "matchTimeRemaining")]
+        match_time_remaining: f32,
     },
     WorldState {
         tick: u64,
@@ -116,6 +149,12 @@ pub enum ServerMessage {
         projectiles: Vec<ProjectileState>,
         hazards: Vec<HazardState>,
         killfeed: Vec<KillFeedItem>,
+        #[serde(default = "default_round")]
+        round: u32,
+        #[serde(default = "default_total_rounds", alias = "totalRounds")]
+        total_rounds: u32,
+        #[serde(default = "default_match_timer", alias = "matchTimeRemaining")]
+        match_time_remaining: f32,
     },
     Pong {
         #[serde(alias = "clientTime")]
@@ -127,9 +166,17 @@ pub enum ServerMessage {
         #[serde(alias = "winnerId")]
         winner_id: String,
         scoreboard: Vec<ScoreEntry>,
+        #[serde(default, alias = "isTournamentComplete")]
+        is_tournament_complete: bool,
     },
     Error {
         message: String,
+    },
+    VoiceSignal {
+        #[serde(alias = "fromPlayerId")]
+        from_player_id: String,
+        #[serde(alias = "signalData")]
+        signal_data: String,
     },
 }
 
@@ -282,6 +329,8 @@ mod tests {
             status: "waiting".into(),
             map: "neon_stadium".into(),
             countdown: None,
+            round: Some(1),
+            total_rounds: Some(3),
         };
 
         let serialized = serde_json::to_string(&lobby).unwrap();
@@ -289,6 +338,8 @@ mod tests {
         assert!(serialized.contains(r#""your_id":"p1""#));
         assert!(serialized.contains(r#""room_code":"NEON""#));
         assert!(serialized.contains(r#""is_host":true"#));
+        assert!(serialized.contains(r#""round":1"#));
+        assert!(serialized.contains(r#""total_rounds":3"#));
     }
 
     #[test]
@@ -339,11 +390,85 @@ mod tests {
             status: "waiting".into(),
             map: "neon_stadium".into(),
             countdown: None,
+            round: None,
+            total_rounds: None,
         };
         let serialized = serde_json::to_string(&msg_orig).unwrap();
         assert!(serialized.contains(r#""your_id":"p_roundtrip""#));
 
         let msg_deser: ServerMessage = serde_json::from_str(&serialized).unwrap();
         assert_eq!(msg_orig, msg_deser);
+    }
+
+    #[test]
+    fn test_voice_signal_serde() {
+        // ClientMessage snake_case
+        let json_client = r#"{"type":"VoiceSignal","target_player_id":"p_target","signal_data":"{\"type\":\"offer\"}"}"#;
+        let msg: ClientMessage = serde_json::from_str(json_client).unwrap();
+        assert_eq!(
+            msg,
+            ClientMessage::VoiceSignal {
+                target_player_id: "p_target".to_string(),
+                signal_data: "{\"type\":\"offer\"}".to_string(),
+            }
+        );
+
+        // ClientMessage camelCase aliases
+        let json_client_camel = r#"{"type":"VoiceSignal","targetPlayerId":"p_target2","signalData":"xyz"}"#;
+        let msg2: ClientMessage = serde_json::from_str(json_client_camel).unwrap();
+        assert_eq!(
+            msg2,
+            ClientMessage::VoiceSignal {
+                target_player_id: "p_target2".to_string(),
+                signal_data: "xyz".to_string(),
+            }
+        );
+
+        // ServerMessage
+        let server_voice = ServerMessage::VoiceSignal {
+            from_player_id: "p_sender".to_string(),
+            signal_data: "ice_candidate".to_string(),
+        };
+        let serialized = serde_json::to_string(&server_voice).unwrap();
+        assert!(serialized.contains(r#""type":"VoiceSignal""#));
+        assert!(serialized.contains(r#""from_player_id":"p_sender""#));
+        let deserialized: ServerMessage = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(server_voice, deserialized);
+    }
+
+    #[test]
+    fn test_tournament_protocol_serde() {
+        // GameStart with default and explicit rounds
+        let json_start_default = r#"{"type":"GameStart","map":"neon_stadium","tickRate":60,"countdown":3}"#;
+        let start_msg: ServerMessage = serde_json::from_str(json_start_default).unwrap();
+        match start_msg {
+            ServerMessage::GameStart { round, total_rounds, .. } => {
+                assert_eq!(round, 1);
+                assert_eq!(total_rounds, 3);
+            }
+            _ => panic!("Expected GameStart"),
+        }
+
+        let json_start_explicit = r#"{"type":"GameStart","map":"cyber_canyon","tick_rate":60,"countdown":0,"round":2,"totalRounds":3}"#;
+        let start_msg2: ServerMessage = serde_json::from_str(json_start_explicit).unwrap();
+        match start_msg2 {
+            ServerMessage::GameStart { round, total_rounds, map, .. } => {
+                assert_eq!(map, "cyber_canyon");
+                assert_eq!(round, 2);
+                assert_eq!(total_rounds, 3);
+            }
+            _ => panic!("Expected GameStart"),
+        }
+
+        // GameOver with is_tournament_complete
+        let json_game_over = r#"{"type":"GameOver","winnerId":"p1","scoreboard":[],"isTournamentComplete":true}"#;
+        let over_msg: ServerMessage = serde_json::from_str(json_game_over).unwrap();
+        match over_msg {
+            ServerMessage::GameOver { winner_id, is_tournament_complete, .. } => {
+                assert_eq!(winner_id, "p1");
+                assert!(is_tournament_complete);
+            }
+            _ => panic!("Expected GameOver"),
+        }
     }
 }

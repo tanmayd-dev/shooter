@@ -22,6 +22,9 @@ export interface ServerLobbyUpdate {
   status: string;
   map: string;
   countdown?: number | null;
+  round?: number;
+  total_rounds?: number;
+  totalRounds?: number;
 }
 
 export interface ServerGameStart {
@@ -30,6 +33,11 @@ export interface ServerGameStart {
   tick_rate: number;
   tickRate?: number;
   countdown: number;
+  round?: number;
+  total_rounds?: number;
+  totalRounds?: number;
+  match_time_remaining?: number;
+  matchTimeRemaining?: number;
 }
 
 export interface ServerPlayerState {
@@ -108,6 +116,11 @@ export interface ServerWorldState {
   projectiles: ServerProjectileState[];
   hazards: ServerHazardState[];
   killfeed: ServerKillFeedItem[];
+  round?: number;
+  total_rounds?: number;
+  totalRounds?: number;
+  match_time_remaining?: number;
+  matchTimeRemaining?: number;
 }
 
 export interface ServerScoreEntry {
@@ -126,6 +139,8 @@ export interface ServerGameOver {
   winner_id: string;
   winnerId?: string;
   scoreboard: ServerScoreEntry[];
+  is_tournament_complete?: boolean;
+  isTournamentComplete?: boolean;
 }
 
 export type ServerMessage =
@@ -134,7 +149,14 @@ export type ServerMessage =
   | ServerWorldState
   | ServerGameOver
   | { type: 'Pong'; client_time: number; server_time: number }
-  | { type: 'Error'; message: string };
+  | { type: 'Error'; message: string }
+  | {
+      type: 'VoiceSignal';
+      from_player_id: string;
+      fromPlayerId?: string;
+      signal_data: string;
+      signalData?: string;
+    };
 
 export class NetworkClient {
   private ws: WebSocket | null = null;
@@ -148,20 +170,98 @@ export class NetworkClient {
   public onGameStart?: (msg: ServerGameStart) => void;
   public onWorldState?: (msg: ServerWorldState) => void;
   public onGameOver?: (msg: ServerGameOver) => void;
+  public onVoiceSignal?: (fromPlayerId: string, signalData: string) => void;
   public onError?: (msg: string) => void;
   public onDisconnect?: () => void;
   public onConnect?: () => void;
 
   constructor(customUrl?: string) {
     if (customUrl) {
-      this.url = customUrl;
+      this.url = this.formatWsUrl(customUrl);
     } else {
-      const loc = window.location;
-      const proto = loc.protocol === 'https:' ? 'wss:' : 'ws:';
-      // If served from Vite dev on 3000, target server on 8080
-      const host = loc.port === '3000' ? `${loc.hostname}:8080` : loc.host;
-      this.url = `${proto}//${host}/ws`;
+      this.url = this.resolveServerUrl();
     }
+  }
+
+  public getUrl(): string {
+    return this.url;
+  }
+
+  /**
+   * Resolves backend WebSocket server URL with precedence:
+   * 1. URL search params: ?server=...
+   * 2. localStorage: 'shooter_server_url'
+   * 3. (window as any).SHOOTER_SERVER_URL
+   * 4. import.meta.env?.VITE_WS_URL
+   * 5. Default:
+   *    If localhost or 127.0.0.1 or port 3000 -> ${proto}//${loc.hostname}:8080/ws
+   *    Otherwise remote domain (e.g. Cloudflare Pages *.pages.dev) -> ${proto}//${loc.host}/ws
+   */
+  private resolveServerUrl(): string {
+    if (typeof window === 'undefined') {
+      return 'ws://localhost:8080/ws';
+    }
+
+    // 1. URL search params: ?server=...
+    try {
+      const urlParam = new URLSearchParams(window.location.search).get('server');
+      if (urlParam) {
+        return this.formatWsUrl(urlParam);
+      }
+    } catch {}
+
+    // 2. localStorage: shooter_server_url
+    try {
+      const stored = localStorage.getItem('shooter_server_url');
+      if (stored) {
+        return this.formatWsUrl(stored);
+      }
+    } catch {}
+
+    // 3. window.SHOOTER_SERVER_URL
+    const win = window as unknown as { SHOOTER_SERVER_URL?: string };
+    if (win && win.SHOOTER_SERVER_URL) {
+      return this.formatWsUrl(win.SHOOTER_SERVER_URL);
+    }
+
+    // 4. import.meta.env?.VITE_WS_URL
+    try {
+      const envUrl = (import.meta as unknown as { env?: { VITE_WS_URL?: string } }).env?.VITE_WS_URL;
+      if (envUrl) {
+        return this.formatWsUrl(envUrl);
+      }
+    } catch {}
+
+    // 5. Default host resolution
+    const loc = window.location;
+    const proto = loc.protocol === 'https:' ? 'wss:' : 'ws:';
+    if (loc.hostname === 'localhost' || loc.hostname === '127.0.0.1' || loc.port === '3000') {
+      return `${proto}//${loc.hostname}:8080/ws`;
+    }
+    // Static hosts such as Cloudflare Pages have no WebSocket endpoint. Players
+    // must configure the Oracle/backend URL (lobby field, ?server=, or VITE_WS_URL).
+    if (loc.hostname.endsWith('.pages.dev') || loc.hostname.endsWith('.workers.dev')) {
+      console.warn(
+        'No backend URL configured for this static host. Set ?server=wss://your-server/ws or save the endpoint in the lobby.'
+      );
+    }
+    return `${proto}//${loc.host}/ws`;
+  }
+
+  private formatWsUrl(raw: string): string {
+    let u = raw.trim();
+    if (u.startsWith('http://')) {
+      u = 'ws://' + u.slice(7);
+    } else if (u.startsWith('https://')) {
+      u = 'wss://' + u.slice(8);
+    } else if (!u.startsWith('ws://') && !u.startsWith('wss://')) {
+      const proto = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      u = `${proto}//${u}`;
+    }
+    if (!u.endsWith('/ws')) {
+      u = u.replace(/\/+$/, '') + '/ws';
+    }
+    return u;
   }
 
   public connect(): Promise<void> {
@@ -252,7 +352,8 @@ export class NetworkClient {
     firePrimary: boolean,
     fireSpecial: boolean,
     abilityMobility: boolean,
-    abilityUtility: boolean
+    abilityUtility: boolean,
+    turnaround: boolean = false
   ): void {
     this.send({
       type: 'PlayerInput',
@@ -264,6 +365,19 @@ export class NetworkClient {
       fire_special: fireSpecial,
       ability_mobility: abilityMobility,
       ability_utility: abilityUtility,
+      turnaround,
+    });
+  }
+
+  public sendNeutralInput(sequence: number): void {
+    this.sendInput(sequence, 0, 0, false, false, false, false, false, false);
+  }
+
+  public sendVoiceSignal(targetPlayerId: string, signalData: string): void {
+    this.send({
+      type: 'VoiceSignal',
+      target_player_id: targetPlayerId,
+      signal_data: signalData,
     });
   }
 
@@ -309,6 +423,14 @@ export class NetworkClient {
       case 'Pong': {
         const now = Date.now();
         this.latency = Math.max(1, Math.round((now - msg.client_time) / 2));
+        break;
+      }
+      case 'VoiceSignal': {
+        const fromId = msg.from_player_id || msg.fromPlayerId || '';
+        const data = msg.signal_data || msg.signalData || '';
+        if (this.onVoiceSignal && fromId) {
+          this.onVoiceSignal(fromId, data);
+        }
         break;
       }
       case 'Error':

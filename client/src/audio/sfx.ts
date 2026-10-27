@@ -99,10 +99,10 @@ class SoundEngine {
       this.engineFilter = this.ctx.createBiquadFilter();
       this.engineFilter.type = 'lowpass';
       this.engineFilter.frequency.setValueAtTime(600, this.ctx.currentTime);
-      this.engineFilter.Q.setValueAtTime(3.0, this.ctx.currentTime);
+      this.engineFilter.Q.setValueAtTime(1.0, this.ctx.currentTime);
 
       this.engineWaveshaper = this.ctx.createWaveShaper();
-      this.engineWaveshaper.curve = this.makeDistortionCurve(25);
+      this.engineWaveshaper.curve = this.makeDistortionCurve(15);
       this.engineWaveshaper.oversample = '2x';
 
       this.engineOsc1 = this.ctx.createOscillator();
@@ -110,15 +110,15 @@ class SoundEngine {
       this.engineOsc1.frequency.setValueAtTime(65, this.ctx.currentTime);
 
       this.engineOsc2 = this.ctx.createOscillator();
-      this.engineOsc2.type = 'sawtooth';
-      this.engineOsc2.frequency.setValueAtTime(65.4, this.ctx.currentTime);
+      this.engineOsc2.type = 'triangle';
+      this.engineOsc2.frequency.setValueAtTime(32.5, this.ctx.currentTime);
 
       this.engineWhineOsc = this.ctx.createOscillator();
       this.engineWhineOsc.type = 'sine';
-      this.engineWhineOsc.frequency.setValueAtTime(260, this.ctx.currentTime);
+      this.engineWhineOsc.frequency.setValueAtTime(130, this.ctx.currentTime);
 
       const whineGain = this.ctx.createGain();
-      whineGain.gain.setValueAtTime(0.12, this.ctx.currentTime);
+      whineGain.gain.setValueAtTime(0.025, this.ctx.currentTime);
       this.engineWhineOsc.connect(whineGain);
       whineGain.connect(this.engineFilter);
 
@@ -155,16 +155,16 @@ class SoundEngine {
       if (archetype === 'desert') {
         this.engineOsc1.type = 'sawtooth';
         this.engineOsc2.type = 'triangle';
-        this.engineFilter.Q.setTargetAtTime(1.5, ctx.currentTime, 0.1);
+        this.engineFilter.Q.setTargetAtTime(0.8, ctx.currentTime, 0.1);
       } else if (archetype === 'rally') {
         this.engineOsc1.type = 'square';
-        this.engineOsc2.type = 'sawtooth';
-        this.engineFilter.Q.setTargetAtTime(4.0, ctx.currentTime, 0.1);
+        this.engineOsc2.type = 'triangle';
+        this.engineFilter.Q.setTargetAtTime(1.2, ctx.currentTime, 0.1);
       } else {
         // stadium
         this.engineOsc1.type = 'sawtooth';
-        this.engineOsc2.type = 'sawtooth';
-        this.engineFilter.Q.setTargetAtTime(3.0, ctx.currentTime, 0.1);
+        this.engineOsc2.type = 'triangle';
+        this.engineFilter.Q.setTargetAtTime(1.0, ctx.currentTime, 0.1);
       }
     }
 
@@ -179,42 +179,39 @@ class SoundEngine {
     switch (archetype) {
       case 'desert': // Low roaring supercharged V8
         baseFreq = 38;
-        maxFreq = 260;
-        filterMin = 350;
-        filterMax = 2200;
+        maxFreq = 220;
+        filterMin = 300;
+        filterMax = 1800;
         break;
       case 'rally': // High-revving turbo inline-4
-        baseFreq = 52;
-        maxFreq = 480;
-        filterMin = 450;
-        filterMax = 3800;
+        baseFreq = 48;
+        maxFreq = 380;
+        filterMin = 380;
+        filterMax = 2800;
         break;
-      case 'stadium': // Screaming Formula V10 / electric KERS
+      case 'stadium': // Clean futuristic Formula V10
       default:
-        baseFreq = 68;
-        maxFreq = 720;
-        filterMin = 500;
-        filterMax = 5200;
+        baseFreq = 58;
+        maxFreq = 520;
+        filterMin = 420;
+        filterMax = 3400;
         break;
     }
 
-    // RPM curve simulates gear changes and high revs
-    const gearSteps = 5;
-    const gearProgress = (clampedSpeed * gearSteps) % 1.0;
-    const gearBase = Math.floor(clampedSpeed * gearSteps) / gearSteps;
-    const effectiveRPM = gearBase * 0.45 + gearProgress * 0.55;
+    // Smooth RPM progression without harsh gear jump beating
+    const effectiveRPM = Math.pow(clampedSpeed, 0.75) * 0.75 + (throttle && clampedSpeed > 0.05 ? 0.25 : 0);
 
-    const targetFreq = baseFreq + effectiveRPM * (maxFreq - baseFreq) + (throttle ? 18 : 0);
-    const targetFilterFreq = filterMin + clampedSpeed * (filterMax - filterMin) + (throttle ? 300 : 0);
-    const targetWhineFreq = targetFreq * (archetype === 'stadium' ? 5.5 : 3.0);
+    const targetFreq = baseFreq + effectiveRPM * (maxFreq - baseFreq) + (throttle ? 12 : 0);
+    const targetFilterFreq = filterMin + clampedSpeed * (filterMax - filterMin) + (throttle ? 250 : 0);
+    const targetWhineFreq = targetFreq * 2.0;
 
-    const targetGain = (0.08 + clampedSpeed * 0.14 + (throttle ? 0.05 : 0)) * (this.isMuted ? 0 : 1);
+    const targetGain = (0.05 + clampedSpeed * 0.10 + (throttle ? 0.04 : 0)) * (this.isMuted ? 0 : 1);
 
-    this.engineOsc1.frequency.setTargetAtTime(targetFreq, t, 0.04);
-    this.engineOsc2.frequency.setTargetAtTime(targetFreq * 1.008, t, 0.04);
-    this.engineWhineOsc.frequency.setTargetAtTime(targetWhineFreq, t, 0.05);
-    this.engineFilter.frequency.setTargetAtTime(targetFilterFreq, t, 0.06);
-    this.engineGain.gain.setTargetAtTime(targetGain, t, 0.05);
+    this.engineOsc1.frequency.setTargetAtTime(targetFreq, t, 0.06);
+    this.engineOsc2.frequency.setTargetAtTime(targetFreq * 0.5, t, 0.06);
+    this.engineWhineOsc.frequency.setTargetAtTime(targetWhineFreq, t, 0.08);
+    this.engineFilter.frequency.setTargetAtTime(targetFilterFreq, t, 0.08);
+    this.engineGain.gain.setTargetAtTime(targetGain, t, 0.06);
   }
 
   // ==========================================
@@ -438,6 +435,49 @@ class SoundEngine {
 
       osc.start(t);
       osc.stop(t + 0.18);
+    } else if (carType === 'apex') {
+      // Apex: Plasma Scatter Flak: resonant violet burst
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(880, t);
+      osc.frequency.exponentialRampToValueAtTime(110, t + 0.12);
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(1600, t);
+      filter.Q.setValueAtTime(4.0, t);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.38, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.masterGain);
+
+      osc.start(t);
+      osc.stop(t + 0.13);
+    } else if (carType === 'titan') {
+      // Titan: Kinetic Taser Dart: high-velocity electric crack
+      const osc = ctx.createOscillator();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(1300, t);
+      osc.frequency.exponentialRampToValueAtTime(260, t + 0.09);
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'highpass';
+      filter.frequency.setValueAtTime(600, t);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.30, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.masterGain);
+
+      osc.start(t);
+      osc.stop(t + 0.10);
     } else {
       // Rally: Precision rail slug: snappy metallic whip/crack
       const osc = ctx.createOscillator();
@@ -521,6 +561,52 @@ class SoundEngine {
 
       sub.start(t);
       sub.stop(t + duration);
+    } else if (carType === 'apex') {
+      // Apex: Sonic Repulsor shockwave blast
+      const duration = 0.45;
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(160, t);
+      osc.frequency.exponentialRampToValueAtTime(750, t + duration * 0.35);
+      osc.frequency.exponentialRampToValueAtTime(60, t + duration);
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(900, t);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.48, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + duration);
+
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.masterGain);
+
+      osc.start(t);
+      osc.stop(t + duration);
+    } else if (carType === 'titan') {
+      // Titan: Energy Siphon Ray: deep channeled beam hum
+      const duration = 0.50;
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(420, t);
+      osc.frequency.exponentialRampToValueAtTime(210, t + duration);
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(650, t);
+      filter.Q.setValueAtTime(5.0, t);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.38, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + duration);
+
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.masterGain);
+
+      osc.start(t);
+      osc.stop(t + duration);
     } else {
       // Rally: Overcharge Rail Beam zap: instant piercing electric discharge
       const duration = 0.32;

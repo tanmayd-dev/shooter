@@ -10,7 +10,8 @@ import { firePrimaryWeapon, updateProjectiles } from './combat/weapons';
 import { NetworkClient, ServerLobbyUpdate, ServerWorldState } from './network';
 import { CAR_CONFIGS } from './physics/configs.ts';
 import { InputController } from './physics/input.ts';
-import { resolveTrackCollisions, stepVehicle } from './physics/vehicle.ts';
+import { getTrack } from './physics/maps.ts';
+import { normalizeAngle, resolveTrackCollisions, stepVehicle } from './physics/vehicle.ts';
 import { HUDRenderer } from './render/hud';
 import { ParticleSystem } from './render/particles';
 import { Renderer3D } from './render3d/scene';
@@ -20,70 +21,9 @@ import {
   LobbyPlayer,
   Projectile,
   RoomState,
-  StadiumTrack,
-  Vector2D,
 } from './types';
 import { LobbyUI } from './ui/lobby';
-
-// ============================================================================
-// Track Generation
-// ============================================================================
-
-function createStadiumTrack(): StadiumTrack {
-  const width = 3600;
-  const height = 2400;
-
-  // Outer border rectangle with chamfered stadium corners
-  const outerBorder: Vector2D[] = [
-    { x: 300, y: 150 },
-    { x: width - 300, y: 150 },
-    { x: width - 150, y: 300 },
-    { x: width - 150, y: height - 300 },
-    { x: width - 300, y: height - 150 },
-    { x: 300, y: height - 150 },
-    { x: 150, y: height - 300 },
-    { x: 150, y: 300 },
-  ];
-
-  // Inner stadium island border
-  const innerBorder: Vector2D[] = [
-    { x: 800, y: 650 },
-    { x: width - 800, y: 650 },
-    { x: width - 650, y: 800 },
-    { x: width - 650, y: height - 800 },
-    { x: width - 800, y: height - 650 },
-    { x: 800, y: height - 650 },
-    { x: 650, y: height - 800 },
-    { x: 650, y: 800 },
-  ];
-
-  // Boost chevrons on straightaways
-  const boostPads = [
-    { id: 'b1', x: width / 2, y: 380, width: 90, height: 180, angle: 0, force: 450 },
-    { id: 'b2', x: width / 2, y: height - 380, width: 90, height: 180, angle: Math.PI, force: 450 },
-    { id: 'b3', x: 380, y: height / 2, width: 90, height: 180, angle: -Math.PI / 2, force: 450 },
-    { id: 'b4', x: width - 380, y: height / 2, width: 90, height: 180, angle: Math.PI / 2, force: 450 },
-  ];
-
-  // Chicane safety barriers
-  const barriers = [
-    { id: 'c1', x: 1250, y: 400, width: 30, height: 160, angle: 0, color: '#ffcc00' },
-    { id: 'c2', x: 2350, y: 400, width: 30, height: 160, angle: 0, color: '#ffcc00' },
-    { id: 'c3', x: 1250, y: height - 400, width: 30, height: 160, angle: 0, color: '#ffcc00' },
-    { id: 'c4', x: 2350, y: height - 400, width: 30, height: 160, angle: 0, color: '#ffcc00' },
-  ];
-
-  // Start / finish line strip
-  const finishLine = {
-    x1: width / 2 - 200,
-    y1: 150,
-    x2: width / 2 - 200,
-    y2: 650,
-    angle: Math.PI / 2,
-  };
-
-  return { width, height, outerBorder, innerBorder, boostPads, barriers, finishLine };
-}
+import { VoiceChatManager } from './audio/voice.ts';
 
 // ============================================================================
 // Game Initialization & Main Loop
@@ -98,9 +38,15 @@ function main(): void {
   const renderer3d = new Renderer3D(webglCanvas);
   const hud = new HUDRenderer();
   const inputController = new InputController('vim-arrows');
-  const track = createStadiumTrack();
+  let track = getTrack('neon_stadium');
   const lobby = new LobbyUI();
   const network = new NetworkClient();
+  const voiceChat = new VoiceChatManager((targetPlayerId, signalData) => {
+    network.sendVoiceSignal(targetPlayerId, signalData);
+  });
+  network.onVoiceSignal = (fromPlayerId, signalData) => {
+    void voiceChat.handleSignal(fromPlayerId, signalData);
+  };
 
   const resize = () => {
     const w = window.innerWidth;
@@ -125,14 +71,78 @@ function main(): void {
   let matchTimeRemaining = 180; // 3 minutes
   let isOnline = false;
   let inputSequence = 0;
+  let currentOnlineRoomCode: string | null = null;
+  let botEngagementTimer = 2.0;
+  let turnaroundCooldown = 0;
+  let forceSnapOnFocus = false;
+  const padCooldowns = new Map<string, number>();
+
+  // Offline Practice Tournament Progression
+  let offlineRound = 1;
+  const offlineTotalRounds = 3;
+  const offlineMapRotation = ['neon_stadium', 'cyber_canyon', 'orbital_foundry'];
+
+  window.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      forceSnapOnFocus = true;
+      lastTime = performance.now();
+    } else {
+      // Background tab safety: immediately send neutral input so car doesn't ghost-drive
+      if (isOnline && network.getConnected()) {
+        inputSequence++;
+        network.sendNeutralInput(inputSequence);
+      }
+    }
+  });
+
+  inputController.onBlur = () => {
+    if (isOnline && network.getConnected()) {
+      inputSequence++;
+      network.sendNeutralInput(inputSequence);
+    }
+  };
+
+  // Stadium Safe Spawn Points
+  const STADIUM_SPAWN_POINTS = [
+    { x: 800, y: 380, angle: 0 },
+    { x: 2800, y: 2020, angle: Math.PI },
+    { x: 2800, y: 380, angle: Math.PI },
+    { x: 800, y: 2020, angle: 0 },
+  ];
+
+  function getSafeSpawnPoint(car: CarState, candidates: CarState[]): { x: number; y: number; angle: number } {
+    const livingOpponents = candidates.filter((c) => c.id !== car.id && c.isAlive);
+    if (livingOpponents.length === 0) {
+      return STADIUM_SPAWN_POINTS[0];
+    }
+
+    let bestSpawn = STADIUM_SPAWN_POINTS[0];
+    let maxMinDist = -1;
+
+    for (const spawn of STADIUM_SPAWN_POINTS) {
+      let minDist = Infinity;
+      for (const opp of livingOpponents) {
+        const d = Math.hypot(opp.x - spawn.x, opp.y - spawn.y);
+        if (d < minDist) {
+          minDist = d;
+        }
+      }
+      if (minDist > maxMinDist) {
+        maxMinDist = minDist;
+        bestSpawn = spawn;
+      }
+    }
+
+    return bestSpawn;
+  }
 
   // Local player car state
   const playerCar: CarState = {
     id: `pilot-${Math.floor(1000 + Math.random() * 9000)}`,
     name: 'PILOT-01',
     archetype: 'stadium',
-    x: 550,
-    y: 400,
+    x: 800,
+    y: 380,
     vx: 0,
     vy: 0,
     angle: 0,
@@ -176,11 +186,11 @@ function main(): void {
     id: 'bot-desert',
     name: 'CRUSHER',
     archetype: 'desert',
-    x: 950,
-    y: 320,
+    x: 2800,
+    y: 2020,
     vx: 0,
     vy: 0,
-    angle: 0,
+    angle: Math.PI,
     angularVelocity: 0,
     steer: 0,
     throttle: 0,
@@ -220,11 +230,11 @@ function main(): void {
     id: 'bot-rally',
     name: 'DRIFT-KING',
     archetype: 'rally',
-    x: 1150,
-    y: 480,
+    x: 2800,
+    y: 380,
     vx: 0,
     vy: 0,
-    angle: 0,
+    angle: Math.PI,
     angularVelocity: 0,
     steer: 0,
     throttle: 0,
@@ -292,7 +302,10 @@ function main(): void {
       playerCar.id = serverAssignedId;
     }
 
-    const roomCode = msg.room_code || msg.roomCode || '';
+    currentOnlineRoomCode = msg.room_code || msg.roomCode || null;
+    localRoomState.code = currentOnlineRoomCode || 'LOCAL';
+
+    const roomCode = currentOnlineRoomCode || '';
     const isHost = msg.is_host ?? msg.isHost ?? false;
 
     // In online room, purge offline bots completely!
@@ -314,10 +327,15 @@ function main(): void {
       };
     });
 
+    if (msg.map) {
+      track = getTrack(msg.map);
+    }
+
     const roomState: RoomState = {
       code: roomCode,
       hostId: isHost ? playerCar.id : (players.find((p) => p.isHost)?.id || ''),
       players,
+      map: msg.map,
       matchActive: msg.status === 'playing',
       countdown: msg.countdown,
     };
@@ -330,10 +348,35 @@ function main(): void {
     if (isOnline) {
       allCars = [playerCar];
     }
-    startMatchCountdown(msg.countdown || 3);
+    if (msg.map) {
+      track = getTrack(msg.map);
+    }
+    const r = msg.round || 1;
+    const tr = msg.total_rounds || msg.totalRounds || 3;
+    hud.setTournamentState(r, tr, msg.map || track.name);
+    hud.isTournamentComplete = false;
+    matchTimeRemaining = typeof msg.match_time_remaining === 'number'
+      ? msg.match_time_remaining
+      : (typeof msg.matchTimeRemaining === 'number' ? msg.matchTimeRemaining : 180);
+    const cd = typeof msg.countdown === 'number' ? msg.countdown : 3;
+    startMatchCountdown(cd);
   };
 
   network.onWorldState = (snapshot: ServerWorldState) => {
+    if (snapshot.round !== undefined) {
+      hud.round = snapshot.round;
+    }
+    if (snapshot.total_rounds !== undefined || snapshot.totalRounds !== undefined) {
+      hud.totalRounds = snapshot.total_rounds || snapshot.totalRounds || 3;
+    }
+    if (snapshot.match_time_remaining !== undefined || snapshot.matchTimeRemaining !== undefined) {
+      matchTimeRemaining = snapshot.match_time_remaining ?? snapshot.matchTimeRemaining ?? matchTimeRemaining;
+    }
+
+    if (!matchActive && countdown === null && snapshot.players.length > 0) {
+      matchActive = true;
+    }
+
     if (!matchActive) return;
 
     // Prune cars that are no longer in server snapshot
@@ -345,6 +388,36 @@ function main(): void {
     // Update / reconcile remote players
     for (const p of snapshot.players) {
       if (p.id === playerCar.id) {
+        if (!playerCar.isAlive && (p.is_alive ?? p.isAlive)) {
+          playerCar.x = p.x;
+          playerCar.y = p.y;
+          playerCar.vx = p.vx;
+          playerCar.vy = p.vy;
+          playerCar.angle = p.angle;
+          playerCar.health = p.health;
+          playerCar.isAlive = true;
+          playerCar.respawnShieldDuration = 2.5;
+        } else if (playerCar.isAlive) {
+          const errDist = Math.hypot(p.x - playerCar.x, p.y - playerCar.y);
+          if (forceSnapOnFocus || errDist > 120) {
+            playerCar.x = p.x;
+            playerCar.y = p.y;
+            playerCar.vx = p.vx;
+            playerCar.vy = p.vy;
+          } else if (errDist > 2) {
+            // Smoothly converge local position towards authoritative server without snapping
+            playerCar.x += (p.x - playerCar.x) * 0.15;
+            playerCar.y += (p.y - playerCar.y) * 0.15;
+          }
+
+          // Smooth chassis heading alignment without overriding active player steering
+          const angleDiff = normalizeAngle(p.angle - playerCar.angle);
+          if (forceSnapOnFocus || Math.abs(angleDiff) > 1.2) {
+            playerCar.angle = p.angle;
+          } else if (Math.abs(angleDiff) > 0.05) {
+            playerCar.angle = normalizeAngle(playerCar.angle + angleDiff * 0.12);
+          }
+        }
         // Reconcile server health & score for local player
         playerCar.health = p.health;
         playerCar.maxHealth = p.max_health || p.maxHealth || playerCar.maxHealth;
@@ -401,12 +474,20 @@ function main(): void {
         };
         allCars.push(remote);
       } else {
-        // Smooth interpolation for remote vehicle movement
-        remote.x += (p.x - remote.x) * 0.45;
-        remote.y += (p.y - remote.y) * 0.45;
+        const remDist = Math.hypot(p.x - remote.x, p.y - remote.y);
+        if (forceSnapOnFocus || remDist > 120) {
+          remote.x = p.x;
+          remote.y = p.y;
+        } else {
+          remote.x += (p.x - remote.x) * 0.35;
+          remote.y += (p.y - remote.y) * 0.35;
+        }
+        const remAngleDiff = normalizeAngle(p.angle - remote.angle);
+        if (Math.abs(remAngleDiff) > 0.04) {
+          remote.angle = normalizeAngle(remote.angle + remAngleDiff * 0.35);
+        }
         remote.vx = p.vx;
         remote.vy = p.vy;
-        remote.angle = p.angle;
         remote.health = p.health;
         remote.isAlive = p.is_alive ?? p.isAlive ?? true;
         remote.isDrifting = p.drift;
@@ -416,6 +497,23 @@ function main(): void {
         remote.kills = p.kills;
         remote.deaths = p.deaths;
         remote.steer = p.steer;
+      }
+    }
+    forceSnapOnFocus = false;
+
+    // Keep the WebRTC voice mesh in sync with the authoritative roster.
+    if (isOnline) {
+      const remoteIds = new Set(
+        snapshot.players.filter((p) => p.id !== playerCar.id).map((p) => p.id)
+      );
+      for (const id of remoteIds) {
+        if (!voiceChat.getPeer(id)) {
+          // Deterministic initiator election avoids offer glare between peers.
+          void voiceChat.addPeer(id, playerCar.id < id);
+        }
+      }
+      for (const id of Array.from(voiceChat.getPeers().keys())) {
+        if (!remoteIds.has(id)) voiceChat.removePeer(id);
       }
     }
 
@@ -433,12 +531,14 @@ function main(): void {
     matchActive = false;
     sfx.explosionSound();
     console.log('Game over!', results);
+    hud.setPodium(true, results.scoreboard);
   };
 
   // Set up lobby callbacks
   lobby.setCallbacks({
-    onCreateRoom: (nickname, archetype) => {
+    onCreateRoom: (nickname, archetype, mapId) => {
       sfx.ensureContext();
+      if (mapId) track = getTrack(mapId);
       playerCar.name = nickname;
       playerCar.archetype = archetype;
       if (network.getConnected()) {
@@ -450,6 +550,9 @@ function main(): void {
         localRoomState.players[0].archetype = archetype;
         lobby.updateRoom(localRoomState, playerCar.id);
       }
+    },
+    onSelectMap: (mapId: string) => {
+      track = getTrack(mapId);
     },
     onJoinRoom: (code, nickname, archetype) => {
       sfx.ensureContext();
@@ -486,22 +589,60 @@ function main(): void {
         lobby.updateRoom(localRoomState, playerCar.id);
       }
     },
-    onStartSolo: (nickname, archetype) => {
+    onStartSolo: (nickname, archetype, mapId) => {
       sfx.ensureContext();
+      offlineRound = 1;
+      hud.isTournamentComplete = false;
+      hud.setTournamentState(1, offlineTotalRounds);
+      if (mapId) {
+        track = getTrack(mapId);
+      } else {
+        track = getTrack(offlineMapRotation[0]);
+      }
+      hud.mapName = track.name || 'Stadium';
+      matchTimeRemaining = 180;
+
       playerCar.name = nickname;
       playerCar.archetype = archetype;
       const cfg = CAR_CONFIGS[archetype];
       playerCar.health = cfg.maxHealth;
       playerCar.maxHealth = cfg.maxHealth;
+      playerCar.x = 800;
+      playerCar.y = 380;
+      playerCar.angle = 0;
+      playerCar.vx = 0;
+      playerCar.vy = 0;
+      playerCar.angularVelocity = 0;
+      playerCar.isAlive = true;
+      bot1.x = 2800;
+      bot1.y = 2020;
+      bot1.angle = Math.PI;
+      bot1.vx = 0;
+      bot1.vy = 0;
+      bot1.angularVelocity = 0;
+      bot1.isAlive = true;
+      bot1.health = bot1.maxHealth;
+      bot2.x = 2800;
+      bot2.y = 380;
+      bot2.angle = Math.PI;
+      bot2.vx = 0;
+      bot2.vy = 0;
+      bot2.angularVelocity = 0;
+      bot2.isAlive = true;
+      bot2.health = bot2.maxHealth;
+      botEngagementTimer = 2.0;
       allCars = [playerCar, bot1, bot2];
       startMatchCountdown(3);
     },
     onStartMatch: () => {
       sfx.ensureContext();
-      const inServerRoom = isOnline && network.getConnected() && localRoomState.code && localRoomState.code !== 'LOCAL';
-      if (inServerRoom) {
+      if (isOnline && network.getConnected() && currentOnlineRoomCode) {
         network.startGame();
       } else {
+        offlineRound = 1;
+        hud.isTournamentComplete = false;
+        hud.setTournamentState(1, offlineTotalRounds);
+        matchTimeRemaining = 180;
         allCars = [playerCar, bot1, bot2];
         startMatchCountdown(3);
       }
@@ -512,16 +653,32 @@ function main(): void {
 
   function startMatchCountdown(startVal = 3): void {
     lobby.hide();
+    botEngagementTimer = 2.0;
+    if (matchTimeRemaining <= 0) {
+      matchTimeRemaining = 180;
+    }
+    if (startVal === 0) {
+      matchActive = true;
+      countdown = null;
+      sfx.countdownBeep(880, true);
+      return;
+    }
     countdown = startVal;
     sfx.countdownBeep(440, false);
 
     const interval = window.setInterval(() => {
-      if (countdown === null) return;
+      if (countdown === null) {
+        window.clearInterval(interval);
+        return;
+      }
       countdown -= 1;
       if (countdown > 0) {
         sfx.countdownBeep(440, false);
       } else if (countdown === 0) {
         sfx.countdownBeep(880, true);
+        if (matchTimeRemaining <= 0) {
+          matchTimeRemaining = 180;
+        }
         matchActive = true;
         window.setTimeout(() => {
           countdown = null;
@@ -547,15 +704,32 @@ function main(): void {
     const dt = Math.min(0.1, (currentTime - lastTime) / 1000);
     lastTime = currentTime;
 
+    if (matchActive) {
+      botEngagementTimer = Math.max(0, botEngagementTimer - dt);
+    }
+
     // 1. Process Controls & Physics
+    let currentLookBack = false;
     if (matchActive && playerCar.isAlive) {
       const input = inputController.sample(dt);
+      currentLookBack = input.lookBack ?? false;
       playerCar.throttle = input.throttle;
       playerCar.steer = input.steer;
       playerCar.handbrake = input.brake;
 
       const config = CAR_CONFIGS[playerCar.archetype];
-      stepVehicle(playerCar, input, config, dt);
+      stepVehicle(playerCar, input, config, dt, undefined, undefined, track.ramps);
+
+      if (turnaroundCooldown > 0) {
+        turnaroundCooldown = Math.max(0, turnaroundCooldown - dt);
+      }
+      if (input.turnaround && turnaroundCooldown <= 0) {
+        turnaroundCooldown = 1.2;
+        playerCar.angle = normalizeAngle(playerCar.angle + Math.PI);
+        playerCar.angularVelocity = 0;
+        particles.emitShockwave(playerCar.x, playerCar.y, 65, '#00f0ff');
+        sfx.boostPadWhoosh();
+      }
 
       // Send to authoritative server if connected
       if (isOnline && network.getConnected()) {
@@ -568,7 +742,8 @@ function main(): void {
           input.firePrimary,
           input.fireSpecial,
           input.abilityMobility,
-          input.abilityUtility
+          input.abilityUtility,
+          input.turnaround ?? false
         );
       }
 
@@ -583,20 +758,20 @@ function main(): void {
         if (res) activeProjectiles.push(res.projectile);
       }
       if (input.fireSpecial) {
-        const res = activateSpecialAbility(playerCar, allCars, particles, handleImpact, handleKill);
+        const res = activateSpecialAbility(playerCar, allCars, particles, handleImpact, handleKill, activeProjectiles);
         if (res) activeProjectiles.push(...res.newProjectiles);
       }
       if (input.abilityMobility) {
-        activateMobilityAbility(playerCar, particles);
+        activateMobilityAbility(playerCar, particles, allCars);
       }
       if (input.abilityUtility) {
-        const res = activateTacticalGadget(playerCar, particles);
+        const res = activateTacticalGadget(playerCar, particles, allCars);
         if (res) activeProjectiles.push(...res.newProjectiles);
       }
     }
 
     // 2. Offline Bot Sparring AI (runs whenever bots are in match)
-    const inServerRoom = isOnline && network.getConnected() && localRoomState.code && localRoomState.code !== 'LOCAL';
+    const inServerRoom = isOnline && network.getConnected() && currentOnlineRoomCode && currentOnlineRoomCode !== 'LOCAL';
     if (!inServerRoom) {
       for (const bot of [bot1, bot2]) {
         if (!bot.isAlive || !matchActive) continue;
@@ -619,13 +794,13 @@ function main(): void {
           throttle,
           steer,
           brake: Math.abs(angleDiff) > 1.2,
-          firePrimary: dist < 500 && Math.abs(angleDiff) < 0.25,
+          firePrimary: botEngagementTimer <= 0 && dist < 500 && Math.abs(angleDiff) < 0.25,
           fireSpecial: false,
           abilityMobility: false,
           abilityUtility: false,
         };
 
-        stepVehicle(bot, botInput, bConfig, dt);
+        stepVehicle(bot, botInput, bConfig, dt, undefined, undefined, track.ramps);
 
         if (botInput.firePrimary) {
           const res = firePrimaryWeapon(bot, particles);
@@ -634,26 +809,86 @@ function main(): void {
       }
     }
 
-    // 3. Update abilities & cooldowns
+    // 3. Update abilities, cooldowns, & respawns
     for (const car of allCars) {
       updateCarAbilities(car, dt);
 
+      // Invulnerability bubble on spawn
+      if (car.respawnShieldDuration && car.respawnShieldDuration > 0) {
+        car.respawnShieldDuration = Math.max(0, car.respawnShieldDuration - dt);
+        car.shieldActive = true;
+        car.shieldDuration = Math.max(car.shieldDuration, car.respawnShieldDuration);
+        if (car.respawnShieldDuration <= 0) {
+          car.shieldActive = false;
+        }
+      }
+
+      // Respawn handler for dead cars
+      if (!car.isAlive && (car.respawnTimer ?? 0) > 0) {
+        car.respawnTimer = (car.respawnTimer ?? 3.5) - dt;
+        if (car.respawnTimer <= 0) {
+          if (!inServerRoom) {
+            const spawn = getSafeSpawnPoint(car, allCars);
+            car.x = spawn.x;
+            car.y = spawn.y;
+            car.angle = spawn.angle;
+            car.vx = 0;
+            car.vy = 0;
+            car.angularVelocity = 0;
+            car.health = car.maxHealth;
+            car.isAlive = true;
+            car.respawnShieldDuration = 2.5;
+            car.shieldActive = true;
+            car.shieldDuration = 2.5;
+
+            particles.emitShockwave(spawn.x, spawn.y, 80, '#00f0ff');
+            if (car.isLocal) {
+              sfx.boostPadWhoosh();
+            }
+          }
+        }
+      }
+
       // Check boost pads
+      const padCd = padCooldowns.get(car.id) ?? 0;
       for (const pad of track.boostPads) {
         const bdx = car.x - pad.x;
         const bdy = car.y - pad.y;
-        if (Math.abs(bdx) < pad.width / 2 + 15 && Math.abs(bdy) < pad.height / 2 + 15) {
+        const padLen = Math.max(pad.width, pad.height);
+        const padW = Math.min(pad.width, pad.height);
+        const cosP = Math.cos(-pad.angle);
+        const sinP = Math.sin(-pad.angle);
+        const localX = bdx * cosP - bdy * sinP;
+        const localY = bdx * sinP + bdy * cosP;
+        if (Math.abs(localX) < padLen / 2 + 20 && Math.abs(localY) < padW / 2 + 20) {
           const forwardDot = Math.cos(car.angle - pad.angle);
-          if (forwardDot > -0.2 && !car.boostActive) {
+          if (forwardDot > -0.2 && padCd <= 0 && !car.boostActive) {
+            padCooldowns.set(car.id, 0.8);
             car.boostActive = true;
             car.boostDuration = 1.2;
-            const force = pad.force ?? 450;
+            const force = pad.force ?? 480;
             car.vx += Math.cos(pad.angle) * force;
             car.vy += Math.sin(pad.angle) * force;
+            const cfg = CAR_CONFIGS[car.archetype];
+            const maxBoostSpd = cfg.maxSpeed * 1.4;
+            const spd = Math.hypot(car.vx, car.vy);
+            if (spd > maxBoostSpd) {
+              car.vx = (car.vx / spd) * maxBoostSpd;
+              car.vy = (car.vy / spd) * maxBoostSpd;
+            }
+            car.speed = Math.hypot(car.vx, car.vy);
             particles.emitShockwave(car.x, car.y, 80, '#00f0ff');
             if (car.isLocal) sfx.boostPadWhoosh();
+            break;
           }
         }
+      }
+    }
+
+    // Decay pad cooldowns
+    for (const [id, cd] of padCooldowns) {
+      if (cd > 0) {
+        padCooldowns.set(id, Math.max(0, cd - dt));
       }
     }
 
@@ -663,7 +898,9 @@ function main(): void {
         resolveTrackCollisions(car, track, car.archetype === 'desert' ? 24 : 20);
       }
     }
-    resolveCarCollisions(allCars, particles, handleImpact, handleKill);
+    if (!inServerRoom) {
+      resolveCarCollisions(allCars, particles, handleImpact, handleKill);
+    }
 
     // 5. Update Projectiles & Combat FX
     activeProjectiles = updateProjectiles(
@@ -676,16 +913,71 @@ function main(): void {
       handleKill
     );
 
-    // 6. Update Particles & 3D Camera
+    // 6. Update Particles, 3D Camera & Positional Voice Audio
     particles.update(dt);
-    renderer3d.updateCamera(playerCar, dt);
+    renderer3d.updateCamera(playerCar, dt, currentLookBack);
 
-    // 7. Update Match Timer
+    if (isOnline) {
+      const remotePositions = new Map<string, { x: number; y: number }>();
+      for (const car of allCars) {
+        if (!car.isLocal && car.isAlive) {
+          remotePositions.set(car.id, { x: car.x, y: car.y });
+        }
+      }
+      voiceChat.updateSpatialAudio({ x: playerCar.x, y: playerCar.y }, remotePositions);
+    }
+
+    // 7. Update Match Timer & Offline Tournament Progression
     if (matchActive && matchTimeRemaining > 0) {
       matchTimeRemaining -= dt;
       if (matchTimeRemaining <= 0) {
         matchTimeRemaining = 0;
-        matchActive = false;
+        if (!inServerRoom) {
+          if (offlineRound < offlineTotalRounds) {
+            offlineRound++;
+            hud.setTournamentState(offlineRound, offlineTotalRounds);
+            const nextMapId = offlineMapRotation[(offlineRound - 1) % offlineMapRotation.length];
+            track = getTrack(nextMapId);
+            hud.mapName = track.name || 'Stadium';
+            matchTimeRemaining = 180;
+
+            // Reset player and bots at safe spawn positions
+            playerCar.x = 800;
+            playerCar.y = 380;
+            playerCar.angle = 0;
+            playerCar.vx = 0;
+            playerCar.vy = 0;
+            playerCar.angularVelocity = 0;
+            playerCar.health = playerCar.maxHealth;
+            playerCar.isAlive = true;
+            playerCar.respawnShieldDuration = 2.5;
+
+            bot1.x = 2800;
+            bot1.y = 2020;
+            bot1.angle = Math.PI;
+            bot1.vx = 0;
+            bot1.vy = 0;
+            bot1.angularVelocity = 0;
+            bot1.health = bot1.maxHealth;
+            bot1.isAlive = true;
+
+            bot2.x = 2800;
+            bot2.y = 380;
+            bot2.angle = Math.PI;
+            bot2.vx = 0;
+            bot2.vy = 0;
+            bot2.angularVelocity = 0;
+            bot2.health = bot2.maxHealth;
+            bot2.isAlive = true;
+
+            startMatchCountdown(3);
+          } else {
+            hud.isTournamentComplete = true;
+            matchActive = false;
+          }
+        } else {
+          matchActive = false;
+        }
       }
     }
 

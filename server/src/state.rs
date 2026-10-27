@@ -85,6 +85,7 @@ pub struct CarSimulation {
     pub boost_pad_cooldown: f32,
     pub ram_active_timer: f32,
     pub emp_slow_timer: f32,
+    pub turnaround_cooldown: f32,
 
     pub score: u32,
     pub kills: u32,
@@ -97,12 +98,16 @@ impl CarSimulation {
         let car_type_lower = player.car_type.to_lowercase();
         let (max_hp, mass, top_speed, accel, turn_rate, grip, drift_grip) =
             if car_type_lower.contains("desert") {
-                (150.0, 1.5, 700.0, 780.0, 2.8, 0.85, 0.55)
+                (150.0, 1.6, 620.0, 460.0, 2.2, 0.85, 0.55)
             } else if car_type_lower.contains("rally") {
-                (85.0, 0.8, 640.0, 1020.0, 4.6, 0.78, 0.45)
+                (85.0, 0.75, 490.0, 640.0, 3.6, 0.80, 0.45)
+            } else if car_type_lower.contains("apex") {
+                (95.0, 0.85, 580.0, 580.0, 3.4, 0.88, 0.60)
+            } else if car_type_lower.contains("titan") {
+                (125.0, 1.3, 500.0, 520.0, 2.6, 0.90, 0.65)
             } else {
                 // Stadium Spec (default)
-                (100.0, 1.0, 620.0, 920.0, 3.8, 0.92, 0.70)
+                (100.0, 1.0, 520.0, 560.0, 3.2, 0.95, 0.70)
             };
 
         Self {
@@ -140,6 +145,7 @@ impl CarSimulation {
             boost_pad_cooldown: 0.0,
             ram_active_timer: 0.0,
             emp_slow_timer: 0.0,
+            turnaround_cooldown: 0.0,
 
             score: 0,
             kills: 0,
@@ -189,6 +195,9 @@ impl CarSimulation {
         if self.boost_pad_cooldown > 0.0 {
             self.boost_pad_cooldown = (self.boost_pad_cooldown - dt).max(0.0);
         }
+        if self.turnaround_cooldown > 0.0 {
+            self.turnaround_cooldown = (self.turnaround_cooldown - dt).max(0.0);
+        }
         if self.shield_timer > 0.0 {
             self.shield_timer = (self.shield_timer - dt).max(0.0);
         }
@@ -201,6 +210,13 @@ impl CarSimulation {
 
         // Regenerate boost meter gradually
         self.boost_meter = (self.boost_meter + 15.0 * dt).min(100.0);
+
+        // Client-requested 180° recovery flip (server-authoritative, 1.2s cooldown)
+        if input.turnaround && self.turnaround_cooldown <= 0.0 {
+            self.angle += std::f32::consts::PI;
+            self.angular_velocity = 0.0;
+            self.turnaround_cooldown = 1.2;
+        }
 
         let steer_in = input.steer.clamp(-1.0, 1.0);
         self.steer = steer_in;
@@ -280,6 +296,15 @@ impl CarSimulation {
         self.vx = fx * v_long + rx * v_lat;
         self.vy = fy * v_long + ry * v_lat;
 
+        // Clamp speed to prevent physics runaway
+        let max_allowed = self.top_speed * 1.5;
+        let spd = (self.vx * self.vx + self.vy * self.vy).sqrt();
+        if spd > max_allowed {
+            let scale = max_allowed / spd;
+            self.vx *= scale;
+            self.vy *= scale;
+        }
+
         // Position integration
         self.x += self.vx * dt;
         self.y += self.vy * dt;
@@ -347,6 +372,7 @@ impl GameState {
                 fire_special: false,
                 ability_mobility: false,
                 ability_utility: false,
+                turnaround: false,
             };
             let input = inputs.get(id).unwrap_or(&default_input);
 
@@ -374,6 +400,14 @@ impl GameState {
                             // 180 slide pivot
                             car.angle += std::f32::consts::PI;
                             car.mobility_cooldown = 2.2;
+                        } else if ct.contains("apex") {
+                            // Aero thruster leap forward
+                            car.vx += car.angle.cos() * 260.0;
+                            car.vy += car.angle.sin() * 260.0;
+                            car.mobility_cooldown = 2.4;
+                        } else if ct.contains("titan") {
+                            // Gravity harpoon tether
+                            car.mobility_cooldown = 3.5;
                         }
                     }
 
@@ -418,6 +452,38 @@ impl GameState {
                                 damage: 0.0,
                             });
                             car.utility_cooldown = 4.5;
+                        } else if ct.contains("apex") {
+                            // Holographic decoy drone
+                            let hid = self.next_hazard_id;
+                            self.next_hazard_id += 1;
+                            self.hazards.push(Hazard {
+                                id: hid,
+                                owner_id: car.id.clone(),
+                                kind: "decoy".to_string(),
+                                x: car.x,
+                                y: car.y,
+                                radius: 45.0,
+                                active: true,
+                                duration: 4.0,
+                                damage: 0.0,
+                            });
+                            car.utility_cooldown = 5.0;
+                        } else if ct.contains("titan") {
+                            // Static EMP disruptor pulse
+                            let hid = self.next_hazard_id;
+                            self.next_hazard_id += 1;
+                            self.hazards.push(Hazard {
+                                id: hid,
+                                owner_id: car.id.clone(),
+                                kind: "emp_smoke".to_string(),
+                                x: car.x,
+                                y: car.y,
+                                radius: 110.0,
+                                active: true,
+                                duration: 2.5,
+                                damage: 0.0,
+                            });
+                            car.utility_cooldown = 6.0;
                         }
                     }
 
@@ -476,6 +542,43 @@ impl GameState {
                             car.vx -= car.angle.cos() * 80.0;
                             car.vy -= car.angle.sin() * 80.0;
                             car.special_cooldown = 1.8;
+                        } else if ct.contains("apex") {
+                            // Sonic repulsor blast
+                            let pid = self.next_projectile_id;
+                            self.next_projectile_id += 1;
+                            self.projectiles.push(Projectile {
+                                id: pid,
+                                owner_id: car.id.clone(),
+                                kind: "repulsor".to_string(),
+                                x: car.x,
+                                y: car.y,
+                                vx: 0.0,
+                                vy: 0.0,
+                                radius: 85.0,
+                                damage: 30.0,
+                                lifetime: 0.35,
+                            });
+                            car.special_cooldown = 2.5;
+                        } else if ct.contains("titan") {
+                            // Energy siphon ray
+                            let pid = self.next_projectile_id;
+                            self.next_projectile_id += 1;
+                            let px = car.x + car.angle.cos() * 32.0;
+                            let py = car.y + car.angle.sin() * 32.0;
+                            let p_speed = 1200.0;
+                            self.projectiles.push(Projectile {
+                                id: pid,
+                                owner_id: car.id.clone(),
+                                kind: "siphon".to_string(),
+                                x: px,
+                                y: py,
+                                vx: car.angle.cos() * p_speed,
+                                vy: car.angle.sin() * p_speed,
+                                radius: 10.0,
+                                damage: 35.0,
+                                lifetime: 0.7,
+                            });
+                            car.special_cooldown = 2.8;
                         }
                     }
 
@@ -486,6 +589,10 @@ impl GameState {
                             ("autocannon", 920.0, 5.5, 0.28, 50.0)
                         } else if ct.contains("rally") {
                             ("rail", 1400.0, 4.0, 0.32, 40.0)
+                        } else if ct.contains("apex") {
+                            ("flak", 1050.0, 5.0, 0.30, 42.0)
+                        } else if ct.contains("titan") {
+                            ("taser", 1000.0, 4.0, 0.25, 30.0)
                         } else {
                             ("pulse", 950.0, 4.0, 0.18, 35.0)
                         };
@@ -536,6 +643,13 @@ impl GameState {
                                 let boost_dir = pad.angle.unwrap_or(car.angle);
                                 car.vx += boost_dir.cos() * pad.boost_speed;
                                 car.vy += boost_dir.sin() * pad.boost_speed;
+                                let max_boosted = car.top_speed * 1.5;
+                                let spd = (car.vx * car.vx + car.vy * car.vy).sqrt();
+                                if spd > max_boosted {
+                                    let scale = max_boosted / spd;
+                                    car.vx *= scale;
+                                    car.vy *= scale;
+                                }
                                 car.boost_meter = 100.0;
                                 car.boost_pad_cooldown = 0.6;
                                 break;
@@ -863,6 +977,10 @@ impl GameState {
     }
 
     pub fn to_world_state_message(&self) -> ServerMessage {
+        self.to_world_state_message_round(1, 3)
+    }
+
+    pub fn to_world_state_message_round(&self, round: u32, total_rounds: u32) -> ServerMessage {
         let players = self
             .cars
             .values()
@@ -929,6 +1047,9 @@ impl GameState {
             projectiles,
             hazards,
             killfeed: self.killfeed.iter().cloned().collect(),
+            round,
+            total_rounds,
+            match_time_remaining: self.match_timer,
         }
     }
 

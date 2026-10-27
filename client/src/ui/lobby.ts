@@ -4,19 +4,22 @@ import {
   RoomState,
 } from '../types';
 import { ARCHETYPE_CONFIGS } from '../physics/configs.ts';
+import { MAP_METADATA } from '../physics/maps.ts';
 
 export interface LobbyCallbacks {
-  onCreateRoom: (nickname: string, archetype: CarArchetype) => void;
+  onCreateRoom: (nickname: string, archetype: CarArchetype, mapId?: string) => void;
   onJoinRoom: (code: string, nickname: string, archetype: CarArchetype) => void;
   onSelectCar: (archetype: CarArchetype) => void;
+  onSelectMap?: (mapId: string) => void;
   onToggleReady: (isReady: boolean) => void;
   onStartMatch: () => void;
-  onStartSolo?: (nickname: string, archetype: CarArchetype) => void;
+  onStartSolo?: (nickname: string, archetype: CarArchetype, mapId?: string) => void;
 }
 
 export class LobbyUI {
   private container: HTMLDivElement;
   private selectedArchetype: CarArchetype = 'stadium';
+  private selectedMap: string = 'neon_stadium';
   private isReady: boolean = false;
   private isHost: boolean = false;
   private currentRoomCode: string = '';
@@ -55,8 +58,21 @@ export class LobbyUI {
     return this.currentRoomCode;
   }
 
+  public getSelectedMap(): string {
+    return this.selectedMap;
+  }
+
+  public setSelectedMap(mapId: string): void {
+    this.selectedMap = mapId;
+    this.updateMapSelection();
+  }
+
   public updateRoom(room: RoomState, localPlayerId: string): void {
     this.currentRoomCode = room.code;
+    if (room.map && room.map !== this.selectedMap) {
+      this.selectedMap = room.map;
+      this.updateMapSelection();
+    }
     const localPlayer = room.players.find((p: LobbyPlayer) => p.id === localPlayerId);
 
     if (localPlayer) {
@@ -119,6 +135,13 @@ export class LobbyUI {
   }
 
   private render(): void {
+    let savedServer = '';
+    try {
+      savedServer = localStorage.getItem('shooter_server_url') || '';
+    } catch {
+      savedServer = '';
+    }
+
     this.container.innerHTML = `
       <div class="lobby-backdrop">
         <header class="lobby-header">
@@ -147,6 +170,14 @@ export class LobbyUI {
                 </div>
               </div>
 
+              <div class="form-group">
+                <label for="server-url-input">SERVER ENDPOINT (CLOUDFLARE PAGES)</label>
+                <div class="input-action-row">
+                  <input id="server-url-input" type="text" class="cyber-input" placeholder="wss://game.example.com" value="${savedServer.replace(/"/g, '&quot;')}" />
+                  <button id="server-save-btn" class="cyber-button secondary">SAVE</button>
+                </div>
+              </div>
+
               <div class="divider">OR</div>
 
               <button id="create-btn" class="cyber-button primary full-width">CREATE NEW ROOM</button>
@@ -165,6 +196,18 @@ export class LobbyUI {
           <!-- Center/Right Column: Vehicle Archetype Selector Carousel -->
           <div class="lobby-content">
             <div class="cyber-panel full-height">
+              <div class="map-selection-header">
+                <span class="map-section-label">ARENA MAP:</span>
+                <div class="map-chips-container">
+                  ${MAP_METADATA.map((m) => `
+                    <button class="map-chip ${m.id === this.selectedMap ? 'active' : ''}" data-map="${m.id}" title="${m.description}">
+                      <span class="map-chip-title">${m.name}</span>
+                      <span class="map-chip-sub">${m.subtitle}</span>
+                    </button>
+                  `).join('')}
+                </div>
+              </div>
+
               <h2 class="panel-title">SELECT CAR ARCHETYPE</h2>
               <p class="panel-desc">Choose your combat vehicle spec. Dual-hand controls: Vim [HJKL]/Arrows + Fixed Combat [ASDF].</p>
 
@@ -172,6 +215,8 @@ export class LobbyUI {
                 ${this.renderArchetypeCard('stadium')}
                 ${this.renderArchetypeCard('desert')}
                 ${this.renderArchetypeCard('rally')}
+                ${this.renderArchetypeCard('apex')}
+                ${this.renderArchetypeCard('titan')}
               </div>
 
               <!-- Action Bar Footer -->
@@ -182,6 +227,10 @@ export class LobbyUI {
                   <span class="key-pill">S</span> Special
                   <span class="key-pill">D</span> Mobility
                   <span class="key-pill">F</span> Gadget
+                  <span class="key-pill">R</span> Flip 180°
+                  <span class="key-pill">B</span> Look Back
+                  <span class="key-pill">V</span> Voice PTT
+                  <span class="key-pill">M</span> Mute Mic
                 </div>
 
                 <div class="button-group">
@@ -258,7 +307,7 @@ export class LobbyUI {
       createBtn.addEventListener('click', () => {
         const nick = this.getNickname();
         if (this.callbacks.onCreateRoom) {
-          this.callbacks.onCreateRoom(nick, this.selectedArchetype);
+          this.callbacks.onCreateRoom(nick, this.selectedArchetype, this.selectedMap);
         }
       });
     }
@@ -269,12 +318,27 @@ export class LobbyUI {
       soloBtn.addEventListener('click', () => {
         const nick = this.getNickname();
         if (this.callbacks.onStartSolo) {
-          this.callbacks.onStartSolo(nick, this.selectedArchetype);
+          this.callbacks.onStartSolo(nick, this.selectedArchetype, this.selectedMap);
         } else if (this.callbacks.onStartMatch) {
           this.callbacks.onStartMatch();
         }
       });
     }
+
+    // Map selection
+    const mapChips = this.container.querySelectorAll<HTMLElement>('.map-chip');
+    mapChips.forEach((chip) => {
+      chip.addEventListener('click', () => {
+        const mapId = chip.getAttribute('data-map');
+        if (mapId) {
+          this.selectedMap = mapId;
+          this.updateMapSelection();
+          if (this.callbacks.onSelectMap) {
+            this.callbacks.onSelectMap(mapId);
+          }
+        }
+      });
+    });
 
     // Room join
     const joinBtn = this.container.querySelector<HTMLButtonElement>('#join-btn');
@@ -287,6 +351,25 @@ export class LobbyUI {
         if (this.callbacks.onJoinRoom) {
           this.callbacks.onJoinRoom(code, nick, this.selectedArchetype);
         }
+      });
+    }
+
+    // Backend endpoint override (needed for static Cloudflare Pages hosting)
+    const serverSaveBtn = this.container.querySelector<HTMLButtonElement>('#server-save-btn');
+    const serverInput = this.container.querySelector<HTMLInputElement>('#server-url-input');
+    if (serverSaveBtn && serverInput) {
+      serverSaveBtn.addEventListener('click', () => {
+        const value = serverInput.value.trim();
+        try {
+          if (value) {
+            localStorage.setItem('shooter_server_url', value);
+          } else {
+            localStorage.removeItem('shooter_server_url');
+          }
+        } catch {
+          // Storage unavailable (private mode) — reload still applies the URL param path.
+        }
+        window.location.reload();
       });
     }
 
@@ -329,6 +412,18 @@ export class LobbyUI {
     }
   }
 
+  private updateMapSelection(): void {
+    const chips = this.container.querySelectorAll<HTMLElement>('.map-chip');
+    chips.forEach((chip) => {
+      const mapId = chip.getAttribute('data-map');
+      if (mapId === this.selectedMap) {
+        chip.classList.add('active');
+      } else {
+        chip.classList.remove('active');
+      }
+    });
+  }
+
   private updateCardSelection(): void {
     const cards = this.container.querySelectorAll<HTMLElement>('.archetype-card');
     cards.forEach((card) => {
@@ -349,7 +444,7 @@ export class LobbyUI {
    * Renders the 2D silhouettes and lighting preview onto each card's mini-canvas.
    */
   private renderCarPreviews(): void {
-    const archetypes: CarArchetype[] = ['stadium', 'desert', 'rally'];
+    const archetypes: CarArchetype[] = ['stadium', 'desert', 'rally', 'apex', 'titan'];
 
     for (const arch of archetypes) {
       const canvas = this.container.querySelector<HTMLCanvasElement>(`#preview-${arch}`);
@@ -436,7 +531,7 @@ export class LobbyUI {
         ctx.arc(18, -3, 2, 0, Math.PI * 2);
         ctx.arc(18, 3, 2, 0, Math.PI * 2);
         ctx.fill();
-      } else {
+      } else if (arch === 'rally') {
         // Rally
         ctx.fillStyle = '#39ff14';
         ctx.strokeStyle = '#00ffaa';
@@ -460,6 +555,111 @@ export class LobbyUI {
         ctx.fillStyle = '#ff0033';
         ctx.fillRect(-24, -14, 4, 3);
         ctx.fillRect(-24, 11, 4, 3);
+      } else if (arch === 'apex') {
+        // Apex: Sleek violet hypercar with swept winglets
+        // Swept-back active aero winglets
+        ctx.fillStyle = '#100518';
+        ctx.strokeStyle = '#d000ff';
+        ctx.lineWidth = 1.5;
+        ctx.shadowColor = '#d000ff';
+        ctx.shadowBlur = 8;
+        // Upper winglet
+        ctx.beginPath();
+        ctx.moveTo(-4, -9);
+        ctx.lineTo(8, -19);
+        ctx.lineTo(2, -19);
+        ctx.lineTo(-14, -9);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        // Lower winglet
+        ctx.beginPath();
+        ctx.moveTo(-4, 9);
+        ctx.lineTo(8, 19);
+        ctx.lineTo(2, 19);
+        ctx.lineTo(-14, 9);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Sleek aerodynamic hypercar body
+        ctx.fillStyle = '#180726';
+        ctx.strokeStyle = '#d000ff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(30, 0); // nose tip
+        ctx.lineTo(16, -6);
+        ctx.lineTo(-4, -10);
+        ctx.lineTo(-24, -8);
+        ctx.lineTo(-28, 0);
+        ctx.lineTo(-24, 8);
+        ctx.lineTo(-4, 10);
+        ctx.lineTo(16, 6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Cockpit with glowing magenta visor
+        ctx.fillStyle = '#d000ff';
+        ctx.shadowColor = '#ff00ff';
+        ctx.shadowBlur = 12;
+        ctx.beginPath();
+        ctx.ellipse(2, 0, 10, 4.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Dual rear jet turbine exhaust nozzles (violet plasma glow)
+        ctx.fillStyle = '#e040fb';
+        ctx.fillRect(-31, -7, 4, 4);
+        ctx.fillRect(-31, 3, 4, 4);
+
+        // Rear aerodynamic GT wing
+        ctx.fillStyle = '#0f0518';
+        ctx.strokeStyle = '#d000ff';
+        ctx.lineWidth = 1.5;
+        ctx.fillRect(-27, -15, 5, 30);
+        ctx.strokeRect(-27, -15, 5, 30);
+      } else if (arch === 'titan') {
+        // Titan: Cobalt armored cruiser with red/blue roof lights
+        // Heavy armored cruiser body
+        ctx.fillStyle = '#081426';
+        ctx.strokeStyle = '#0066ff';
+        ctx.lineWidth = 2;
+        ctx.shadowColor = '#0066ff';
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.roundRect(-27, -13, 54, 26, 3);
+        ctx.fill();
+        ctx.stroke();
+
+        // Heavy steel wrap-around push bumper / bull-bar on front
+        ctx.fillStyle = '#404c60';
+        ctx.strokeStyle = '#788ca6';
+        ctx.lineWidth = 1.5;
+        ctx.fillRect(27, -11, 4, 22);
+        ctx.strokeRect(27, -11, 4, 22);
+        // Rubber push bumper pads
+        ctx.fillStyle = '#11141c';
+        ctx.fillRect(30, -7, 2, 5);
+        ctx.fillRect(30, 2, 2, 5);
+
+        // Armored cabin windscreen
+        ctx.fillStyle = '#050c18';
+        ctx.fillRect(-10, -9, 22, 18);
+
+        // Overhead emergency police LED strobe lightbar on roof
+        // Lightbar base
+        ctx.fillStyle = '#11141c';
+        ctx.fillRect(-2, -9, 5, 18);
+        // Red LED (upper)
+        ctx.fillStyle = '#ff0033';
+        ctx.shadowColor = '#ff0033';
+        ctx.shadowBlur = 12;
+        ctx.fillRect(-1.5, -8, 4, 7);
+        // Blue LED (lower)
+        ctx.fillStyle = '#0066ff';
+        ctx.shadowColor = '#0066ff';
+        ctx.shadowBlur = 12;
+        ctx.fillRect(-1.5, 1, 4, 7);
       }
 
       ctx.restore();
@@ -580,6 +780,73 @@ export class LobbyUI {
         margin: 0 0 16px;
         font-size: 12px;
         color: #99aabf;
+      }
+
+      .map-selection-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 12px;
+        background: rgba(14, 18, 28, 0.7);
+        padding: 8px 12px;
+        border-radius: 6px;
+        border: 1px solid rgba(0, 240, 255, 0.2);
+      }
+
+      .map-section-label {
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 1.5px;
+        color: #8899aa;
+        white-space: nowrap;
+      }
+
+      .map-chips-container {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        flex: 1;
+      }
+
+      .map-chip {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        padding: 6px 14px;
+        background: #141a28;
+        border: 1px solid #28334a;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        text-align: left;
+      }
+
+      .map-chip:hover {
+        border-color: #00f0ff;
+        background: #1c2438;
+      }
+
+      .map-chip.active {
+        border-color: #00f0ff;
+        background: rgba(0, 240, 255, 0.15);
+        box-shadow: 0 0 12px rgba(0, 240, 255, 0.3);
+      }
+
+      .map-chip-title {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        color: #ffffff;
+      }
+
+      .map-chip.active .map-chip-title {
+        color: #00f0ff;
+      }
+
+      .map-chip-sub {
+        font-size: 9px;
+        letter-spacing: 0.5px;
+        color: #8899aa;
       }
 
       .form-group {
@@ -727,10 +994,12 @@ export class LobbyUI {
 
       .archetype-carousel {
         display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 16px;
+        grid-template-columns: repeat(5, minmax(180px, 1fr));
+        gap: 12px;
         flex: 1;
         min-height: 0;
+        overflow-x: auto;
+        padding-bottom: 6px;
       }
 
       .archetype-card {
@@ -764,6 +1033,16 @@ export class LobbyUI {
         box-shadow: 0 0 20px rgba(57, 255, 20, 0.4);
       }
 
+      .archetype-card.selected.apex {
+        border-color: #d000ff;
+        box-shadow: 0 0 20px rgba(208, 0, 255, 0.4);
+      }
+
+      .archetype-card.selected.titan {
+        border-color: #0066ff;
+        box-shadow: 0 0 20px rgba(0, 102, 255, 0.4);
+      }
+
       .archetype-badge {
         font-size: 10px;
         font-weight: 800;
@@ -774,6 +1053,8 @@ export class LobbyUI {
       .archetype-badge.stadium { color: #00f0ff; }
       .archetype-badge.desert { color: #ff4b1f; }
       .archetype-badge.rally { color: #39ff14; }
+      .archetype-badge.apex { color: #d000ff; }
+      .archetype-badge.titan { color: #0066ff; }
 
       .archetype-name {
         margin: 0;
