@@ -3,6 +3,7 @@ import type {
   KillfeedEntry,
 } from '../types.ts';
 import { ARCHETYPE_CONFIGS } from '../physics/configs.ts';
+import type { VoiceConnectionState } from '../audio/voice.ts';
 
 export type ScreenCoordProvider =
   | Map<string, { x: number; y: number }>
@@ -19,6 +20,21 @@ export class HUDRenderer {
   public mapName: string = 'neon_stadium';
   public isTournamentComplete: boolean = false;
   public podiumResults: Array<{ id?: string; name: string; kills: number; score: number; carType?: string }> | null = null;
+
+  public voiceState: VoiceConnectionState = 'idle';
+  public voicePeers: number = 0;
+  public voicePeerLimit: number = 7;
+
+  /** Mirrors VoiceChatManager's aggregate ICE/mesh state into the HUD. */
+  public setVoiceState(
+    state: VoiceConnectionState,
+    connectedPeers: number = 0,
+    peerLimit: number = 7,
+  ): void {
+    this.voiceState = state;
+    this.voicePeers = connectedPeers;
+    this.voicePeerLimit = peerLimit;
+  }
 
   public setTournamentState(round: number, totalRounds: number, mapName?: string): void {
     this.round = round;
@@ -97,6 +113,9 @@ export class HUDRenderer {
 
     // 3. Top Left: Score & Leaderboard
     this.renderScoreboard(ctx, localCar, allCars);
+
+    // 3b. Top Left under the scoreboard: voice mesh / ICE health
+    this.renderVoiceStatus(ctx, allCars.length);
 
     // 4. Center: 3-2-1-GO Countdown overlay
     if (countdown !== null) {
@@ -882,6 +901,54 @@ export class HUDRenderer {
     ctx.fillText(roundText, centerX + 10, headerY);
     ctx.shadowBlur = 0;
 
+    ctx.restore();
+  }
+
+  // ==========================================
+  // VOICE MESH / ICE STATUS
+  // ==========================================
+  private renderVoiceStatus(ctx: CanvasRenderingContext2D, carCount: number): void {
+    const x = 14;
+    // Sit directly below the scoreboard panel.
+    const y = 14 + 34 + Math.min(3, carCount) * 22 + 10;
+    const h = 24;
+
+    let label: string;
+    let color: string;
+    switch (this.voiceState) {
+      case 'connected':
+        label = `VOICE ONLINE · ${this.voicePeers}/${this.voicePeerLimit} PEERS`;
+        color = '#39ff14';
+        break;
+      case 'connecting':
+        label = 'VOICE LINKING…';
+        color = '#ffaa00';
+        break;
+      case 'unavailable':
+        label = '⚠ VOICE UNAVAILABLE — NO RELAY PATH';
+        color = '#ff2244';
+        break;
+      default:
+        label = `VOICE STANDBY · V TO TALK · ${this.voicePeerLimit} PEER MAX`;
+        color = '#8899aa';
+        break;
+    }
+
+    ctx.save();
+    ctx.font = '900 10px monospace, system-ui';
+    const w = Math.max(190, ctx.measureText(label).width + 24);
+    ctx.fillStyle = 'rgba(10, 14, 22, 0.85)';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(x - 10, y, w, h, 5);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = color;
+    ctx.fillText(label, x, y + h / 2 + 0.5);
     ctx.restore();
   }
 

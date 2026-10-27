@@ -18,13 +18,111 @@ export const PUBLIC_STUN_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun1.l.google.com:19302' },
 ];
 
+/**
+ * The server's room cap is 8 players (`MAX_PLAYERS_PER_ROOM` in
+ * `server/src/room.rs`), so a full room creates a 7-peer mesh per client. The
+ * server already refuses the 9th player; this constant only surfaces the
+ * practical limit so the client never opens an unbounded number of PCs.
+ */
+export const MAX_VOICE_PEERS_PER_ROOM = 7;
+
+/** WebSocket message cap configured by the server (`MAX_WS_MESSAGE_BYTES`). */
+export const MAX_SIGNAL_BYTES = 64 * 1024;
+
+export type VoiceConnectionState = 'idle' | 'connecting' | 'connected' | 'unavailable';
+
+/** Reads the raw build-time `VITE_ICE_SERVERS` JSON string, if present. */
+export function readIceServersConfig(): string | undefined {
+  try {
+    const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
+    return env?.VITE_ICE_SERVERS;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Parses a `VITE_ICE_SERVERS` JSON array of `RTCIceServer` objects.
+ *
+ * TURN credentials (`username`, `credential`) are passed through untouched;
+ * invalid/missing config falls back to the public STUN defaults so a typo
+ * degrades to "no TURN" instead of breaking the whole voice client.
+ */
+export function parseIceServers(raw: string | undefined): RTCIceServer[] {
+  if (!raw || !raw.trim()) return PUBLIC_STUN_SERVERS;
+
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      throw new Error('expected a non-empty JSON array');
+    }
+
+    const servers: RTCIceServer[] = [];
+    for (const entry of parsed) {
+      if (!entry || typeof entry !== 'object') {
+        throw new Error('each ICE server must be an object');
+      }
+      const value = entry as Record<string, unknown>;
+      const urls = value.urls;
+      const validUrls =
+        typeof urls === 'string' ||
+        (Array.isArray(urls) && urls.length > 0 && urls.every((url) => typeof url === 'string'));
+      if (!validUrls) {
+        throw new Error('each ICE server needs urls as a string or string array');
+      }
+
+      const server: RTCIceServer = { urls: urls as string | string[] };
+      if (typeof value.username === 'string') server.username = value.username;
+      if (typeof value.credential === 'string') server.credential = value.credential;
+      // `credentialType` is not present in all TS DOM lib versions; browsers
+      // default TURN credentials to the long-term "password" mechanism.
+      servers.push(server);
+    }
+    return servers;
+  } catch (err) {
+    console.warn('Invalid VITE_ICE_SERVERS, falling back to public STUN:', err);
+    return PUBLIC_STUN_SERVERS;
+  }
+}
+
+/** Build-time resolved ICE server list. */
+export const ICE_SERVERS: RTCIceServer[] = parseIceServers(readIceServersConfig());
+
+/**
+ * Builds an `RTCPeerConnection` configuration. `relayOnly` forces TURN relay
+ * candidates and is used for the single automatic retry after direct ICE fails.
+ */
+export function buildIceConfiguration(
+  relayOnly: boolean,
+  servers: RTCIceServer[] = ICE_SERVERS,
+): RTCConfiguration {
+  return relayOnly
+    ? { iceServers: servers, iceTransportPolicy: 'relay' }
+    : { iceServers: servers };
+}
+
+/** UTF-8 byte length of a signaling payload (SDP/candidate JSON string). */
+export function signalByteLength(signalData: string): number {
+  return new TextEncoder().encode(signalData).length;
+}
+
+/** Guards against sending a signaling payload the server's WS cap would drop. */
+export function isSignalWithinWsLimit(signalData: string): boolean {
+  return signalByteLength(signalData) <= MAX_SIGNAL_BYTES;
+}
+
 export class VoiceChatManager {
   private peers: Map<string, RTCPeerConnection> = new Map();
   private remoteAudioNodes: Map<string, RemoteSpatialAudioNodes> = new Map();
   private pendingCandidates: Map<string, RTCIceCandidateInit[]> = new Map();
+  private initiatorPeers: Map<string, boolean> = new Map();
+  private relayOnlyPeers: Set<string> = new Set();
+  private relayRetried: Set<string> = new Set();
 
   private localStream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
+  private localPlayerId: string | null = null;
+  private lastVoiceState: VoiceConnectionState = 'idle';
 
   private transmitting = false;
   private muted = false;
@@ -32,12 +130,66 @@ export class VoiceChatManager {
 
   public onSignal?: (targetPlayerId: string, signalData: string) => void;
   public onSpeakingChange?: (playerId: string, speaking: boolean) => void;
+  public onVoiceStateChange?: (state: VoiceConnectionState, connectedPeers: number) => void;
 
   constructor(onSignal?: (targetPlayerId: string, signalData: string) => void) {
     if (onSignal) {
       this.onSignal = onSignal;
     }
     this.bindKeyListeners();
+  }
+
+  /** Needed for deterministic offer/relay-retry election once the server assigns an ID. */
+  public setLocalPlayerId(playerId: string): void {
+    this.localPlayerId = playerId;
+  }
+
+  public getMaxPeers(): number {
+    return MAX_VOICE_PEERS_PER_ROOM;
+  }
+
+  public getConnectedPeerCount(): number {
+    let connected = 0;
+    for (const pc of this.peers.values()) {
+      if (pc.connectionState === 'connected') connected++;
+    }
+    return connected;
+  }
+
+  public getVoiceState(): VoiceConnectionState {
+    if (this.peers.size === 0) return 'idle';
+
+    let connected = 0;
+    let failed = false;
+    for (const pc of this.peers.values()) {
+      if (pc.connectionState === 'connected') connected++;
+      if (pc.iceConnectionState === 'failed' || pc.connectionState === 'failed') failed = true;
+    }
+
+    if (failed) return 'unavailable';
+    if (connected === this.peers.size) return 'connected';
+    return 'connecting';
+  }
+
+  private emitVoiceState(): void {
+    const state = this.getVoiceState();
+    const connected = this.getConnectedPeerCount();
+    this.lastVoiceState = state;
+    if (this.onVoiceStateChange) {
+      this.onVoiceStateChange(state, connected);
+    }
+  }
+
+  /** Returns the currently advertised voice state (also used by the HUD). */
+  public getLastVoiceState(): VoiceConnectionState {
+    return this.lastVoiceState;
+  }
+
+  private shouldInitiate(remotePlayerId: string): boolean {
+    if (this.localPlayerId) {
+      return this.localPlayerId < remotePlayerId;
+    }
+    return this.initiatorPeers.get(remotePlayerId) ?? true;
   }
 
   // ============================================================================
@@ -322,16 +474,30 @@ export class VoiceChatManager {
   // WebRTC Peer Connection & Signaling
   // ============================================================================
 
-  public async addPeer(remotePlayerId: string, isInitiator: boolean): Promise<void> {
+  public async addPeer(
+    remotePlayerId: string,
+    isInitiator: boolean,
+    relayOnly = false,
+  ): Promise<void> {
     if (this.isDisposed || this.peers.has(remotePlayerId)) return;
     if (typeof RTCPeerConnection === 'undefined') {
       return;
     }
+    if (this.peers.size >= MAX_VOICE_PEERS_PER_ROOM) {
+      console.warn(
+        `Voice mesh peer cap reached (${MAX_VOICE_PEERS_PER_ROOM}); not connecting ${remotePlayerId}`
+      );
+      return;
+    }
 
-    const pc = new RTCPeerConnection({
-      iceServers: PUBLIC_STUN_SERVERS,
-    });
+    this.initiatorPeers.set(remotePlayerId, isInitiator);
+    if (relayOnly) {
+      this.relayOnlyPeers.add(remotePlayerId);
+    }
+
+    const pc = new RTCPeerConnection(buildIceConfiguration(relayOnly));
     this.peers.set(remotePlayerId, pc);
+    this.emitVoiceState();
 
     // Attach local stream tracks
     if (this.localStream) {
@@ -359,10 +525,27 @@ export class VoiceChatManager {
       this.setupRemoteAudio(remotePlayerId, stream);
     };
 
+    pc.oniceconnectionstatechange = () => {
+      // Ignore stale PCs that were replaced by a relay retry.
+      if (this.peers.get(remotePlayerId) !== pc) return;
+
+      if (pc.iceConnectionState === 'failed') {
+        console.warn(`ICE failed for voice peer ${remotePlayerId}; retrying via TURN relay`);
+        this.retryWithRelay(remotePlayerId);
+      }
+      this.emitVoiceState();
+    };
+
     pc.onconnectionstatechange = () => {
+      if (this.peers.get(remotePlayerId) !== pc) return;
+
       if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
         this.cleanupAudioNodes(remotePlayerId);
       }
+      if (pc.connectionState === 'failed') {
+        this.retryWithRelay(remotePlayerId);
+      }
+      this.emitVoiceState();
     };
 
     if (isInitiator) {
@@ -370,12 +553,30 @@ export class VoiceChatManager {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         if (this.onSignal) {
-          this.onSignal(remotePlayerId, JSON.stringify(offer));
+          // `relayRetry` tells the answerer to rebuild its side with
+          // iceTransportPolicy: 'relay' as well.
+          this.onSignal(
+            remotePlayerId,
+            JSON.stringify(relayOnly ? { ...offer, relayRetry: true } : offer)
+          );
         }
       } catch (err) {
         console.warn(`Failed to create WebRTC offer for ${remotePlayerId}:`, err);
       }
     }
+  }
+
+  /**
+   * One automatic repair attempt: rebuild the peer with relay-only ICE. The
+   * deterministic lower-ID side sends the new offer so both sides do not glare.
+   */
+  private retryWithRelay(remotePlayerId: string): void {
+    if (this.isDisposed || this.relayRetried.has(remotePlayerId)) return;
+    this.relayRetried.add(remotePlayerId);
+
+    const initiate = this.shouldInitiate(remotePlayerId);
+    this.removePeer(remotePlayerId);
+    void this.addPeer(remotePlayerId, initiate, true);
   }
 
   public removePeer(remotePlayerId: string): void {
@@ -389,10 +590,19 @@ export class VoiceChatManager {
 
     this.cleanupAudioNodes(remotePlayerId);
     this.pendingCandidates.delete(remotePlayerId);
+    this.initiatorPeers.delete(remotePlayerId);
+    this.relayOnlyPeers.delete(remotePlayerId);
+    this.emitVoiceState();
   }
 
   public async handleSignal(fromPlayerId: string, signalData: string): Promise<void> {
     if (this.isDisposed) return;
+    if (!isSignalWithinWsLimit(signalData)) {
+      console.warn(
+        `Dropping oversized WebRTC signal from ${fromPlayerId} (${signalByteLength(signalData)} bytes > ${MAX_SIGNAL_BYTES})`
+      );
+      return;
+    }
 
     let data: any;
     try {
@@ -403,9 +613,21 @@ export class VoiceChatManager {
     }
 
     if (data.type === 'offer') {
+      const relayOnly = data.relayRetry === true;
+      if (relayOnly) {
+        // The initiator already used its one retry; do not loop on failure.
+        this.relayRetried.add(fromPlayerId);
+      }
       let pc = this.peers.get(fromPlayerId);
+
+      // The initiator fell back to TURN; rebuild our legacy direct PC so the
+      // answer also uses relay candidates.
+      if (pc && relayOnly && !this.relayOnlyPeers.has(fromPlayerId)) {
+        this.removePeer(fromPlayerId);
+        pc = undefined;
+      }
       if (!pc) {
-        await this.addPeer(fromPlayerId, false);
+        await this.addPeer(fromPlayerId, false, relayOnly);
         pc = this.peers.get(fromPlayerId);
       }
       if (!pc) return;
@@ -487,6 +709,9 @@ export class VoiceChatManager {
     this.peers.clear();
     this.remoteAudioNodes.clear();
     this.pendingCandidates.clear();
+    this.initiatorPeers.clear();
+    this.relayOnlyPeers.clear();
+    this.relayRetried.clear();
 
     if (this.localStream) {
       for (const track of this.localStream.getTracks()) {

@@ -1,0 +1,51 @@
+name: client
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'client/**'
+      - '.github/workflows/client.yml'
+  pull_request:
+    paths:
+      - 'client/**'
+      - '.github/workflows/client.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Test (typecheck + unit tests)
+        run: npm test
+
+      - name: Build (CSP + headers + budget checks)
+        run: npm run build
+        env:
+          # Set the repository variable to the production backend, e.g.
+          # wss://game.example.com/ws. Without it connect-src stays 'self'.
+          VITE_WS_URL: ${{ vars.VITE_WS_URL }}
+
+      - name: Upload Pages artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shooter-client-dist
+          path: client/dist
+          if-no-files-found: error

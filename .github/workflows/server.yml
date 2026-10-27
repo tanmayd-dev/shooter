@@ -1,0 +1,96 @@
+name: server
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'packaging/**'
+      - '.github/workflows/server.yml'
+  pull_request:
+    paths:
+      - 'server/**'
+      - 'packaging/**'
+      - '.github/workflows/server.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # The server has no C dependencies, so cargo can cross-compile to the Oracle
+  # ARM host from x86_64 once the GNU linker is installed. These variables are
+  # ignored for the native x86_64 build.
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+  CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+
+      - name: cargo test
+        run: cargo test --all-targets
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: x86_64
+          - target: aarch64-unknown-linux-gnu
+            arch: aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+          key: ${{ matrix.target }}
+
+      # Ubuntu already has the native linker. Cross builds need the aarch64
+      # GNU toolchain; using the rust target + this linker keeps the workflow
+      # free of Docker (the `cross` alternative is documented in DEPLOYMENT.md).
+      - name: Install aarch64 GNU linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package binary and checksum
+        run: |
+          set -euo pipefail
+          binary="target/${{ matrix.target }}/release/shooter-server"
+          test -x "$binary"
+          install -m 0755 "$binary" "shooter-server-${{ matrix.arch }}"
+          sha256sum "shooter-server-${{ matrix.arch }}" > "shooter-server-${{ matrix.arch }}.sha256"
+          cat "shooter-server-${{ matrix.arch }}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shooter-server-${{ matrix.arch }}
+          path: |
+            server/shooter-server-${{ matrix.arch }}
+            server/shooter-server-${{ matrix.arch }}.sha256
+          if-no-files-found: error

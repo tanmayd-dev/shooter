@@ -1,0 +1,58 @@
+[Unit]
+Description=Shooter Arena authoritative game server
+Documentation=https://github.com/tanmayd-dev/shooter/blob/main/DEPLOYMENT.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs as an unprivileged, transient user. Install the binary at
+# /usr/local/bin/shooter-server and the built client at
+# /srv/shooter/client/dist (both owned by root, world-readable).
+DynamicUser=yes
+WorkingDirectory=/srv/shooter
+
+# Optional environment file. Keep it root:root 0644 (the dynamic user must be
+# able to read it). Set SHOOTER_BIND/SHOOTER_PORT/SHOOTER_ALLOWED_ORIGINS and
+# TURN-related build-time values here. The leading "-" makes it optional.
+EnvironmentFile=-/etc/shooter/shooter-server.env
+
+# No StateDirectory/RuntimeDirectory is required: the server is stateless and
+# only reads files (it never writes logs, state or caches to disk). Logs go to
+# the journal.
+Environment=SHOOTER_BIND=127.0.0.1
+Environment=SHOOTER_PORT=8080
+Environment=SHOOTER_STATIC_DIR=/srv/shooter/client/dist
+
+ExecStart=/usr/local/bin/shooter-server
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=15s
+
+# Hardening. ProtectSystem=strict makes the whole filesystem read-only except
+# /dev, /proc, /sys and explicitly whitelisted paths; /srv stays readable.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

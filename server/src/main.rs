@@ -5,7 +5,7 @@ pub mod state;
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -103,8 +103,54 @@ pub struct AppState {
 }
 
 pub const MAX_CONNECTIONS: usize = 512;
+/// Mirrors the WebSocket message cap configured in `ws_handler`.
+pub const MAX_WS_MESSAGE_BYTES: usize = 64 * 1024;
+
+/// Validates an explicit static directory. Kept separate from the environment
+/// so it can be unit-tested without mutating process-global state.
+pub fn validate_static_dir(path: &Path) -> Result<PathBuf, String> {
+    if path.is_dir() {
+        Ok(path.to_path_buf())
+    } else {
+        Err(format!(
+            "SHOOTER_STATIC_DIR={} does not exist or is not a directory",
+            path.display()
+        ))
+    }
+}
+
+/// Resolves the directory to serve the built client from.
+///
+/// `SHOOTER_STATIC_DIR` is authoritative when set (and must exist). Otherwise the
+/// historical CWD-relative probe order is preserved: `client/dist`, then
+/// `../client/dist`.
+pub fn resolve_static_dir() -> Result<Option<PathBuf>, String> {
+    match std::env::var_os("SHOOTER_STATIC_DIR") {
+        Some(raw) if !raw.is_empty() => {
+            let path = PathBuf::from(raw);
+            validate_static_dir(&path).map(Some)
+        }
+        _ => {
+            let candidates = [Path::new("client/dist"), Path::new("../client/dist")];
+            Ok(candidates
+                .iter()
+                .find(|p| p.exists() && p.is_dir())
+                .map(|p| p.to_path_buf()))
+        }
+    }
+}
 
 pub fn create_app(room_manager: Arc<RoomManager>) -> Router {
+    let static_dir = resolve_static_dir().unwrap_or_else(|err| {
+        panic!("Invalid static directory configuration: {err}");
+    });
+    create_app_with_static_dir(room_manager, static_dir)
+}
+
+pub fn create_app_with_static_dir(
+    room_manager: Arc<RoomManager>,
+    static_dir: Option<PathBuf>,
+) -> Router {
     let state = AppState {
         room_manager,
         connections: Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS)),
@@ -116,21 +162,36 @@ pub fn create_app(room_manager: Arc<RoomManager>) -> Router {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let dist_paths = [
-        Path::new("client/dist"),
-        Path::new("../client/dist"),
-    ];
-    let found_dist = dist_paths.iter().find(|p| p.exists() && p.is_dir());
-
-    if let Some(dist_dir) = found_dist {
-        info!("Serving static files from {:?}", dist_dir);
+    if let Some(dist_dir) = static_dir {
+        info!("Serving static files from {}", dist_dir.display());
         app = app.fallback_service(ServeDir::new(dist_dir));
     } else {
-        info!("client/dist not found, static file serving inactive");
+        info!("Static file serving inactive (client/dist not found and SHOOTER_STATIC_DIR unset)");
         app = app.fallback(fallback_handler);
     }
 
     app
+}
+
+/// Human-readable description of the WebSocket origin policy for startup logs.
+pub fn describe_allowed_origins() -> String {
+    let configured: Vec<String> = std::env::var("SHOOTER_ALLOWED_ORIGINS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .map(str::to_string)
+        .collect();
+
+    let defaults = "localhost, 127.0.0.1, *.pages.dev, and requests without an Origin header";
+    if configured.is_empty() {
+        defaults.to_string()
+    } else {
+        format!(
+            "{defaults}; extra from SHOOTER_ALLOWED_ORIGINS: {}",
+            configured.join(", ")
+        )
+    }
 }
 
 #[tokio::main]
@@ -149,7 +210,11 @@ async fn main() {
         }
     });
 
-    let app = create_app(room_manager);
+    let static_dir = resolve_static_dir().unwrap_or_else(|err| {
+        error!("{err}");
+        std::process::exit(1);
+    });
+    let app = create_app_with_static_dir(room_manager, static_dir);
 
     let bind_host = std::env::var("SHOOTER_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port = std::env::var("SHOOTER_PORT")
@@ -159,19 +224,49 @@ async fn main() {
     let addr: SocketAddr = format!("{bind_host}:{port}")
         .parse()
         .expect("Invalid SHOOTER_BIND / SHOOTER_PORT");
-    info!("Shooter server listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("Failed to bind TCP listener");
 
+    info!("Shooter server listening on http://{}", addr);
+    info!("Allowed WebSocket origins: {}", describe_allowed_origins());
+
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-            info!("Shutdown signal received");
-        })
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("Server terminated unexpectedly");
+}
+
+/// Resolves on SIGINT or SIGTERM (systemd sends the latter). On non-Unix
+/// platforms only Ctrl-C is observed.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            info!("SIGINT received, shutting down");
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+                info!("SIGTERM received, shutting down");
+            }
+            Err(err) => {
+                error!("Failed to install SIGTERM handler: {err}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
 }
 
 async fn health_handler() -> impl IntoResponse {
@@ -234,7 +329,7 @@ async fn ws_handler(
         }
     };
 
-    ws.max_message_size(64 * 1024)
+    ws.max_message_size(MAX_WS_MESSAGE_BYTES)
         .max_frame_size(16 * 1024)
         .max_write_buffer_size(1 << 20)
         .read_buffer_size(8 * 1024)
@@ -296,7 +391,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
         match msg_result {
             Ok(Message::Text(text)) => {
-                if text.len() > 64 * 1024 {
+                if text.len() > MAX_WS_MESSAGE_BYTES {
                     debug!("Closing {}: oversized text frame", player_id);
                     break;
                 }
@@ -654,6 +749,43 @@ mod tests {
         assert_eq!(sanitize_player_name(""), "PILOT");
         assert_eq!(sanitize_player_name("   "), "PILOT");
         assert_eq!(sanitize_player_name("!@#$%^&*()"), "PILOT");
+    }
+
+    #[test]
+    fn test_validate_static_dir_rejects_missing_directory() {
+        let err = validate_static_dir(Path::new("/definitely/not/a/shooter/dist"))
+            .expect_err("missing SHOOTER_STATIC_DIR must be a startup error");
+        assert!(err.contains("SHOOTER_STATIC_DIR"), "error should name the env var: {err}");
+        assert!(err.contains("does not exist"), "error should explain the failure: {err}");
+    }
+
+    #[test]
+    fn test_validate_static_dir_accepts_existing_directory() {
+        let dir = std::env::temp_dir();
+        assert_eq!(validate_static_dir(&dir).unwrap(), dir);
+    }
+
+    #[test]
+    fn test_voice_signal_sdp_fits_websocket_limit() {
+        // A representative offer is a few KiB; the relay envelope must stay far
+        // below the 64 KiB WebSocket message cap.
+        let sdp = format!(
+            "v=0\r\no=- 4611731400430051336 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n\
+             m=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:abcd\r\n\
+             a=ice-pwd:{}\r\na=fingerprint:sha-256 {}\r\n",
+            "x".repeat(256),
+            "AB:CD".repeat(32)
+        );
+        let msg = ClientMessage::VoiceSignal {
+            target_player_id: "p_target".into(),
+            signal_data: serde_json::json!({ "type": "offer", "sdp": sdp }).to_string(),
+        };
+        let wire = serde_json::to_string(&msg).unwrap();
+        assert!(
+            wire.len() < MAX_WS_MESSAGE_BYTES,
+            "SDP signaling envelope must fit under the 64 KiB WS limit (was {} bytes)",
+            wire.len()
+        );
     }
 
     #[test]

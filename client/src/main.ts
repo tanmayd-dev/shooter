@@ -44,6 +44,9 @@ function main(): void {
   const voiceChat = new VoiceChatManager((targetPlayerId, signalData) => {
     network.sendVoiceSignal(targetPlayerId, signalData);
   });
+  voiceChat.onVoiceStateChange = (state, connectedPeers) => {
+    hud.setVoiceState(state, connectedPeers, voiceChat.getMaxPeers());
+  };
   network.onVoiceSignal = (fromPlayerId, signalData) => {
     void voiceChat.handleSignal(fromPlayerId, signalData);
   };
@@ -181,6 +184,9 @@ function main(): void {
     gadgetMaxCooldown: 10.0,
   };
 
+  // Deterministic ICE-offer election uses the server-assigned player ID.
+  voiceChat.setLocalPlayerId(playerCar.id);
+
   // Bot sparring partners for offline practice
   const bot1: CarState = {
     id: 'bot-desert',
@@ -300,6 +306,7 @@ function main(): void {
     const serverAssignedId = msg.your_id || msg.yourId;
     if (serverAssignedId) {
       playerCar.id = serverAssignedId;
+      voiceChat.setLocalPlayerId(serverAssignedId);
     }
 
     currentOnlineRoomCode = msg.room_code || msg.roomCode || null;
