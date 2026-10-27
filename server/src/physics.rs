@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 pub const PLAYER_RADIUS: f32 = 20.0;
-pub const ARENA_WIDTH: f32 = 2400.0;
-pub const ARENA_HEIGHT: f32 = 1400.0;
+pub const ARENA_WIDTH: f32 = 3600.0;
+pub const ARENA_HEIGHT: f32 = 2400.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Rect {
@@ -182,62 +182,56 @@ impl Arena {
             Rect::new(0.0, 0.0, wall_thick, height),                         // Left
             Rect::new(width - wall_thick, 0.0, wall_thick, height),         // Right
 
-            // Central island
-            Rect::new(1050.0, 550.0, 300.0, 300.0),
+            // Central stadium island (800..2800, 650..1750)
+            Rect::new(800.0, 650.0, width - 1600.0, height - 1300.0),
 
-            // Left chicanes
-            Rect::new(550.0, 220.0, 50.0, 380.0),
-            Rect::new(550.0, 800.0, 50.0, 380.0),
-
-            // Right chicanes
-            Rect::new(1800.0, 220.0, 50.0, 380.0),
-            Rect::new(1800.0, 800.0, 50.0, 380.0),
-
-            // Track divider chicanes
-            Rect::new(950.0, 220.0, 500.0, 45.0),
-            Rect::new(950.0, 1135.0, 500.0, 45.0),
+            // Shoulder safety curbing (lane at y: 380 is fully clear)
+            Rect::new(1350.0, 220.0, 25.0, 100.0),
+            Rect::new(2350.0, 220.0, 25.0, 100.0),
+            Rect::new(1350.0, height - 320.0, 25.0, 100.0),
+            Rect::new(2350.0, height - 320.0, 25.0, 100.0),
         ];
 
         let boost_pads = vec![
             // Top straightaway boost east
             BoostPad {
                 id: 1,
-                rect: Rect::new(750.0, 90.0, 120.0, 60.0),
+                rect: Rect::new(width / 2.0 - 100.0, 335.0, 200.0, 90.0),
                 boost_speed: 650.0,
                 angle: Some(0.0),
             },
             // Bottom straightaway boost west
             BoostPad {
                 id: 2,
-                rect: Rect::new(1530.0, 1250.0, 120.0, 60.0),
+                rect: Rect::new(width / 2.0 - 100.0, height - 425.0, 200.0, 90.0),
                 boost_speed: 650.0,
                 angle: Some(std::f32::consts::PI),
             },
-            // Left corridor boost south
+            // Left corridor boost north
             BoostPad {
                 id: 3,
-                rect: Rect::new(100.0, 650.0, 60.0, 120.0),
-                boost_speed: 650.0,
-                angle: Some(std::f32::consts::FRAC_PI_2),
-            },
-            // Right corridor boost north
-            BoostPad {
-                id: 4,
-                rect: Rect::new(2240.0, 630.0, 60.0, 120.0),
+                rect: Rect::new(335.0, height / 2.0 - 100.0, 90.0, 200.0),
                 boost_speed: 650.0,
                 angle: Some(-std::f32::consts::FRAC_PI_2),
+            },
+            // Right corridor boost south
+            BoostPad {
+                id: 4,
+                rect: Rect::new(width - 425.0, height / 2.0 - 100.0, 90.0, 200.0),
+                boost_speed: 650.0,
+                angle: Some(std::f32::consts::FRAC_PI_2),
             },
         ];
 
         let spawns = vec![
-            (300.0, 700.0, 0.0),
-            (2100.0, 700.0, std::f32::consts::PI),
-            (1200.0, 150.0, 0.0),
-            (1200.0, 1250.0, std::f32::consts::PI),
-            (400.0, 380.0, std::f32::consts::FRAC_PI_4),
-            (2000.0, 1020.0, -std::f32::consts::FRAC_PI_4 * 3.0),
-            (2000.0, 380.0, std::f32::consts::FRAC_PI_4 * 3.0),
-            (400.0, 1020.0, -std::f32::consts::FRAC_PI_4),
+            (800.0, 380.0, 0.0),
+            (2800.0, 2020.0, std::f32::consts::PI),
+            (2800.0, 380.0, 0.0),
+            (800.0, 2020.0, std::f32::consts::PI),
+            (500.0, 1200.0, std::f32::consts::FRAC_PI_2),
+            (3100.0, 1200.0, -std::f32::consts::FRAC_PI_2),
+            (1800.0, 380.0, 0.0),
+            (1800.0, 2020.0, std::f32::consts::PI),
         ];
 
         Self {
@@ -246,6 +240,179 @@ impl Arena {
             walls,
             boost_pads,
             spawns,
+        }
+    }
+
+    pub fn neon_stadium() -> Self {
+        Self::default_arena()
+    }
+
+    pub fn cyber_canyon() -> Self {
+        let width = ARENA_WIDTH;
+        let height = ARENA_HEIGHT;
+        let wall_thick = 30.0;
+
+        let walls = vec![
+            // Perimeter walls
+            Rect::new(0.0, 0.0, width, wall_thick),
+            Rect::new(0.0, height - wall_thick, width, wall_thick),
+            Rect::new(0.0, 0.0, wall_thick, height),
+            Rect::new(width - wall_thick, 0.0, wall_thick, height),
+
+            // West mesa barrier formation (600..1600, 600..1800)
+            Rect::new(600.0, 600.0, 1000.0, 1200.0),
+
+            // East mesa top & bottom barriers (centered at x: 2450)
+            Rect::new(2150.0, 725.0, 600.0, 350.0),
+            Rect::new(2150.0, 1325.0, 600.0, 350.0),
+
+            // Canyon rock pillars
+            Rect::new(1065.0, 345.0, 70.0, 70.0),
+            Rect::new(2465.0, 345.0, 70.0, 70.0),
+            Rect::new(1065.0, height - 415.0, 70.0, 70.0),
+            Rect::new(2465.0, height - 415.0, 70.0, 70.0),
+        ];
+
+        let boost_pads = vec![
+            // North straightaway boost east
+            BoostPad {
+                id: 1,
+                rect: Rect::new(width / 2.0 - 50.0, 250.0, 100.0, 200.0),
+                boost_speed: 650.0,
+                angle: Some(0.0),
+            },
+            // South straightaway boost west
+            BoostPad {
+                id: 2,
+                rect: Rect::new(width / 2.0 - 50.0, height - 450.0, 100.0, 200.0),
+                boost_speed: 650.0,
+                angle: Some(std::f32::consts::PI),
+            },
+            // Central chasm launch boost east (positioned before jump ramp)
+            BoostPad {
+                id: 3,
+                rect: Rect::new(1250.0, 1110.0, 120.0, 180.0),
+                boost_speed: 650.0,
+                angle: Some(0.0),
+            },
+            // West corridor boost north
+            BoostPad {
+                id: 4,
+                rect: Rect::new(335.0, height / 2.0 - 90.0, 90.0, 180.0),
+                boost_speed: 650.0,
+                angle: Some(-std::f32::consts::FRAC_PI_2),
+            },
+        ];
+
+        let spawns = vec![
+            (800.0, 380.0, 0.0),
+            (2800.0, 2020.0, std::f32::consts::PI),
+            (2800.0, 380.0, 0.0),
+            (800.0, 2020.0, std::f32::consts::PI),
+            (500.0, 1200.0, std::f32::consts::FRAC_PI_2),
+            (3100.0, 1200.0, -std::f32::consts::FRAC_PI_2),
+        ];
+
+        Self {
+            width,
+            height,
+            walls,
+            boost_pads,
+            spawns,
+        }
+    }
+
+    pub fn orbital_foundry() -> Self {
+        let width = ARENA_WIDTH;
+        let height = ARENA_HEIGHT;
+        let wall_thick = 30.0;
+
+        let walls = vec![
+            // Perimeter walls
+            Rect::new(0.0, 0.0, width, wall_thick),
+            Rect::new(0.0, height - wall_thick, width, wall_thick),
+            Rect::new(0.0, 0.0, wall_thick, height),
+            Rect::new(width - wall_thick, 0.0, wall_thick, height),
+
+            // Central reactor core island (900..2700, 800..1600)
+            Rect::new(900.0, 800.0, 1800.0, 800.0),
+
+            // Structural steel pillars (80x80)
+            Rect::new(610.0, 610.0, 80.0, 80.0),
+            Rect::new(width - 690.0, 610.0, 80.0, 80.0),
+            Rect::new(610.0, height - 690.0, 80.0, 80.0),
+            Rect::new(width - 690.0, height - 690.0, 80.0, 80.0),
+
+            // Core chicane obstacles
+            Rect::new(1782.5, 460.0, 35.0, 180.0),
+            Rect::new(1782.5, height - 640.0, 35.0, 180.0),
+            Rect::new(510.0, 1182.5, 180.0, 35.0),
+            Rect::new(width - 690.0, 1182.5, 180.0, 35.0),
+        ];
+
+        let boost_pads = vec![
+            BoostPad {
+                id: 1,
+                rect: Rect::new(1155.0, 290.0, 90.0, 180.0),
+                boost_speed: 650.0,
+                angle: Some(0.0),
+            },
+            BoostPad {
+                id: 2,
+                rect: Rect::new(2355.0, 290.0, 90.0, 180.0),
+                boost_speed: 650.0,
+                angle: Some(0.0),
+            },
+            BoostPad {
+                id: 3,
+                rect: Rect::new(2355.0, height - 470.0, 90.0, 180.0),
+                boost_speed: 650.0,
+                angle: Some(std::f32::consts::PI),
+            },
+            BoostPad {
+                id: 4,
+                rect: Rect::new(1155.0, height - 470.0, 90.0, 180.0),
+                boost_speed: 650.0,
+                angle: Some(std::f32::consts::PI),
+            },
+            BoostPad {
+                id: 5,
+                rect: Rect::new(335.0, 710.0, 90.0, 180.0),
+                boost_speed: 650.0,
+                angle: Some(std::f32::consts::FRAC_PI_2),
+            },
+            BoostPad {
+                id: 6,
+                rect: Rect::new(width - 425.0, 1510.0, 90.0, 180.0),
+                boost_speed: 650.0,
+                angle: Some(-std::f32::consts::FRAC_PI_2),
+            },
+        ];
+
+        let spawns = vec![
+            (800.0, 380.0, 0.0),
+            (2800.0, 2020.0, std::f32::consts::PI),
+            (2800.0, 380.0, 0.0),
+            (800.0, 2020.0, std::f32::consts::PI),
+        ];
+
+        Self {
+            width,
+            height,
+            walls,
+            boost_pads,
+            spawns,
+        }
+    }
+
+    pub fn from_map_name(map: &str) -> Self {
+        let m = map.to_lowercase();
+        if m.contains("canyon") {
+            Self::cyber_canyon()
+        } else if m.contains("foundry") || m.contains("orbital") || m.contains("industrial") {
+            Self::orbital_foundry()
+        } else {
+            Self::neon_stadium()
         }
     }
 }

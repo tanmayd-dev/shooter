@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { BoostPad, StadiumTrack, TrackBarrier, Vector2D } from '../types.ts';
+import type { BoostPad, JumpRamp, StadiumTrack, TrackBarrier, Vector2D } from '../types.ts';
 
 /**
  * Creates procedural textures for asphalt, hazard stripes, and checkered finish gantry.
@@ -184,8 +184,11 @@ export class Track3D {
     // ========================================================================
     // 3. OUTER & INNER STADIUM BORDER WALLS
     // ========================================================================
-    this.buildBorderWalls(track.outerBorder, 0x00f0ff, 'outer');
-    this.buildBorderWalls(track.innerBorder, 0xff007f, 'inner');
+    const theme = track.theme || 'neon';
+    const outerColor = theme === 'canyon' ? 0xff8800 : theme === 'industrial' ? 0x39ff14 : 0x00f0ff;
+    const innerColor = theme === 'canyon' ? 0xff3300 : theme === 'industrial' ? 0x00e5ff : 0xff007f;
+    this.buildBorderWalls(track.outerBorder, outerColor, 'outer');
+    this.buildBorderWalls(track.innerBorder, innerColor, 'inner');
 
     // ========================================================================
     // 4. CHICANE HAZARD BARRIERS
@@ -200,7 +203,7 @@ export class Track3D {
     // ========================================================================
     // 6. JUMP RAMPS / CHEVRONS
     // ========================================================================
-    this.buildJumpRamps();
+    this.buildJumpRamps(track.ramps, outerColor);
   }
 
   // ==========================================================================
@@ -475,18 +478,18 @@ export class Track3D {
       padGroup.position.set(pad.x, 0, pad.y);
       padGroup.rotation.y = -pad.angle;
 
-      const padWidth = pad.width;
-      const padLength = pad.height;
+      const padLength = Math.max(pad.width, pad.height);
+      const padWidth = Math.min(pad.width, pad.height);
 
-      // Base metallic induction plate embedded in tarmac
-      const baseGeo = this.registerGeometry(new THREE.BoxGeometry(padWidth, 0.6, padLength));
+      // Base metallic induction plate embedded in tarmac (length along X, width along Z)
+      const baseGeo = this.registerGeometry(new THREE.BoxGeometry(padLength, 0.6, padWidth));
       const baseMesh = new THREE.Mesh(baseGeo, padMetalMat);
       baseMesh.position.set(0, 0.3, 0);
       baseMesh.receiveShadow = true;
       padGroup.add(baseMesh);
 
       // Glowing border frame
-      const frameGeo = this.registerGeometry(new THREE.BoxGeometry(padWidth + 2, 0.8, padLength + 2));
+      const frameGeo = this.registerGeometry(new THREE.BoxGeometry(padLength + 2, 0.8, padWidth + 2));
       const frameMat = this.registerMaterial(
         new THREE.MeshBasicMaterial({ color: 0x00f0ff, wireframe: true })
       );
@@ -494,17 +497,17 @@ export class Track3D {
       frameMesh.position.set(0, 0.4, 0);
       padGroup.add(frameMesh);
 
-      // Multiple chevron arrows pointing forward along the pad
+      // Multiple chevron arrows ('>') pointing forward along +X in direction of boost
       const numChevrons = 4;
       const spacing = padLength / (numChevrons + 1);
 
       for (let i = 0; i < numChevrons; i++) {
-        const zPos = -padLength / 2 + spacing * (i + 1);
+        const xPos = -padLength / 2 + spacing * (i + 1);
 
-        // Build a chevron using an angled V-shape
+        // Build a chevron arrow pointing toward +X
         const armLength = padWidth * 0.38;
         const armWidth = 4.0;
-        const chevronArmGeo = this.registerGeometry(new THREE.BoxGeometry(armWidth, 0.8, armLength));
+        const chevronArmGeo = this.registerGeometry(new THREE.BoxGeometry(armLength, 0.8, armWidth));
 
         const chevronMat = this.registerMaterial(
           new THREE.MeshBasicMaterial({
@@ -512,17 +515,17 @@ export class Track3D {
           })
         );
 
-        // Left wing
-        const leftWing = new THREE.Mesh(chevronArmGeo, chevronMat);
-        leftWing.position.set(-armLength * 0.35, 0.7, zPos + armLength * 0.2);
-        leftWing.rotation.y = -Math.PI / 4;
-        padGroup.add(leftWing);
+        // Top wing (slanted back towards -X)
+        const topWing = new THREE.Mesh(chevronArmGeo, chevronMat);
+        topWing.position.set(xPos - armLength * 0.25, 0.7, armLength * 0.3);
+        topWing.rotation.y = Math.PI / 4;
+        padGroup.add(topWing);
 
-        // Right wing
-        const rightWing = new THREE.Mesh(chevronArmGeo, chevronMat);
-        rightWing.position.set(armLength * 0.35, 0.7, zPos + armLength * 0.2);
-        rightWing.rotation.y = Math.PI / 4;
-        padGroup.add(rightWing);
+        // Bottom wing (slanted back towards -X)
+        const botWing = new THREE.Mesh(chevronArmGeo, chevronMat);
+        botWing.position.set(xPos - armLength * 0.25, 0.7, -armLength * 0.3);
+        botWing.rotation.y = -Math.PI / 4;
+        padGroup.add(botWing);
 
         this.chevrons.push({
           material: chevronMat,
@@ -540,11 +543,20 @@ export class Track3D {
   // ==========================================================================
   // JUMP RAMPS (High-speed stadium launches with neon rails)
   // ==========================================================================
-  private buildJumpRamps(): void {
-    const rampLocations = [
-      { x: 1950, z: 380, angle: 0, width: 85, length: 110, height: 18 },
-      { x: 1950, z: 2400 - 380, angle: Math.PI, width: 85, length: 110, height: 18 },
-    ];
+  private buildJumpRamps(ramps?: JumpRamp[], accentColor: number = 0x00f0ff): void {
+    const rampLocations = (ramps && ramps.length > 0)
+      ? ramps.map((r) => ({
+          x: r.x,
+          z: r.y,
+          angle: r.angle,
+          width: r.width,
+          length: r.length,
+          height: r.height,
+        }))
+      : [
+          { x: 1950, z: 380, angle: 0, width: 85, length: 110, height: 18 },
+          { x: 1950, z: 2400 - 380, angle: Math.PI, width: 85, length: 110, height: 18 },
+        ];
 
     const rampMat = this.registerMaterial(
       new THREE.MeshStandardMaterial({
@@ -555,7 +567,7 @@ export class Track3D {
     );
 
     const neonRampMat = this.registerMaterial(
-      new THREE.MeshBasicMaterial({ color: 0x00f0ff })
+      new THREE.MeshBasicMaterial({ color: accentColor })
     );
 
     for (const r of rampLocations) {

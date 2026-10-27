@@ -59,7 +59,9 @@ export class InputController {
   private abilityUtility = false;
 
   public cameraTogglePressed = false;
+  public turnaroundPressed = false;
   public onCameraToggle?: () => void;
+  public onBlur?: () => void;
 
   private boundKeyDown: (e: KeyboardEvent) => void;
   private boundKeyUp: (e: KeyboardEvent) => void;
@@ -115,6 +117,7 @@ export class InputController {
     this.abilityMobility = false;
     this.abilityUtility = false;
     this.cameraTogglePressed = false;
+    this.turnaroundPressed = false;
   }
 
   /**
@@ -180,11 +183,12 @@ export class InputController {
       "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
       "KeyK", "KeyJ", "KeyH", "KeyL",
       "KeyW", "KeyA", "KeyS", "KeyD", "KeyF", "KeyC",
+      "KeyR", "KeyB", "Backspace",
       "Semicolon", "Space",
     ]);
 
     if (gameCodes.has(code)) return true;
-    if (["k", "j", "h", "l", "w", "a", "s", "d", "f", "c", ";"].includes(k)) return true;
+    if (["k", "j", "h", "l", "w", "a", "s", "d", "f", "c", ";", "r", "b"].includes(k)) return true;
     return false;
   }
 
@@ -203,6 +207,11 @@ export class InputController {
       if (!e.repeat) {
         this.onCameraToggle?.();
       }
+    }
+
+    // One-shot 180° recovery flip (R / Backspace)
+    if ((e.code === "KeyR" || e.code === "Backspace") && !e.repeat) {
+      this.turnaroundPressed = true;
     }
 
     this.pressedKeys.add(e.code);
@@ -226,6 +235,7 @@ export class InputController {
   private handleBlur(): void {
     this.pressedKeys.clear();
     this.cameraTogglePressed = false;
+    this.onBlur?.();
   }
 
   /**
@@ -346,6 +356,10 @@ export class InputController {
     this.abilityMobility = rawMobility;
     this.abilityUtility = rawUtility;
 
+    const rawTurnaround = this.turnaroundPressed;
+    this.turnaroundPressed = false;
+    const rawLookBack = this.hasKey("KeyB", "b");
+
     this.sequence++;
 
     return {
@@ -357,6 +371,8 @@ export class InputController {
       fireSpecial: this.fireSpecial,
       abilityMobility: this.abilityMobility,
       abilityUtility: this.abilityUtility,
+      turnaround: rawTurnaround,
+      lookBack: rawLookBack,
     };
   }
 

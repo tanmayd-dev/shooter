@@ -4,12 +4,13 @@ set -euo pipefail
 # Shooter - Native Linux App Launcher
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${SHOOTER_PORT:-8080}"
+export SHOOTER_PORT="${PORT}"
 SERVER_BIN="${ROOT_DIR}/server/target/release/shooter-server"
 
 echo "=== Starting Shooter Launcher ==="
 
 # Check if server is already running on port
-if ! curl -s "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
+if ! curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
     echo "Starting local game server on port ${PORT}..."
     if [[ -f "${SERVER_BIN}" ]]; then
         "${SERVER_BIN}" &
@@ -22,7 +23,7 @@ if ! curl -s "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
 
     # Wait for server to become healthy
     for i in {1..30}; do
-        if curl -s "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
+        if curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
             echo "Server ready!"
             break
         fi

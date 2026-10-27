@@ -9,11 +9,13 @@ import {
   resolveWallBounce,
   resolveArenaBounds,
   resolveBarrierCollisions,
+  resolveRampPhysics,
+  stepRampPhysics,
   Vehicle,
 } from "./vehicle.ts";
-import { CAR_CONFIGS, getCarConfig } from "./configs.ts";
+import { CAR_CONFIGS, getCarConfig, PHYSICS_CONSTANTS } from "./configs.ts";
 import { InputController } from "./input.ts";
-import type { InputState } from "../types.ts";
+import type { InputState, JumpRamp } from "../types.ts";
 
 // ============================================================================
 // Lightweight Zero-Dependency Test Framework
@@ -270,7 +272,7 @@ describe("Trackmania Vehicle Dynamics Engine", () => {
       const s = CAR_CONFIGS.stadium;
       assert.strictEqual(s.gripRatio, 0.96);
       assert.strictEqual(s.driftFrictionRatio, 0.82);
-      assert.strictEqual(s.turnRate, 3.6);
+      assert.strictEqual(s.turnRate, 3.2);
       assert.strictEqual(s.maxSpeed, 520);
       assert.strictEqual(s.mass, 1.0);
       assert.strictEqual(s.maxHealth, 100);
@@ -280,7 +282,7 @@ describe("Trackmania Vehicle Dynamics Engine", () => {
       const d = CAR_CONFIGS.desert;
       assert.strictEqual(d.gripRatio, 0.88);
       assert.strictEqual(d.driftFrictionRatio, 0.70);
-      assert.strictEqual(d.turnRate, 2.4);
+      assert.strictEqual(d.turnRate, 2.2);
       assert.strictEqual(d.maxSpeed, 620);
       assert.strictEqual(d.mass, 1.6);
       assert.strictEqual(d.maxHealth, 150);
@@ -290,7 +292,7 @@ describe("Trackmania Vehicle Dynamics Engine", () => {
       const r = CAR_CONFIGS.rally;
       assert.strictEqual(r.gripRatio, 0.80);
       assert.strictEqual(r.driftFrictionRatio, 0.55);
-      assert.strictEqual(r.turnRate, 4.2);
+      assert.strictEqual(r.turnRate, 3.6);
       assert.strictEqual(r.maxSpeed, 490);
       assert.strictEqual(r.mass, 0.75);
       assert.strictEqual(r.maxHealth, 85);
@@ -360,6 +362,188 @@ describe("Trackmania Vehicle Dynamics Engine", () => {
       assert.strictEqual(input.firePrimary, true);
 
       controller.destroy();
+    });
+  });
+
+  describe("6. Momentum-Based Steering & Rotational Inertia", () => {
+    it("turning accelerates angular velocity smoothly rather than instantaneous snap", () => {
+      const config = getCarConfig("stadium");
+      const state = createVehicleState({ x: 500, y: 500, vx: 200, vy: 0, angle: 0, angularVelocity: 0, speed: 200 });
+      const steerInput = makeNeutralInput({ steer: 1.0 });
+
+      // Step exactly 1 tick
+      stepVehicle(state, steerInput, config, 1 / 60);
+
+      // Must have started accelerating, but NOT instantly snapped to config.turnRate (3.2)
+      assert.ok(state.angularVelocity > 0, `Angular velocity should be positive, got ${state.angularVelocity}`);
+      assert.ok(
+        state.angularVelocity < config.turnRate * 0.5,
+        `Angular velocity should not immediately snap to max turnRate (${config.turnRate}), got ${state.angularVelocity}`
+      );
+    });
+
+    it("angular velocity accelerates monotonically towards target under sustained steer", () => {
+      const config = getCarConfig("stadium");
+      const state = createVehicleState({ x: 500, y: 500, vx: 200, vy: 0, angle: 0, angularVelocity: 0, speed: 200 });
+      const steerInput = makeNeutralInput({ steer: 1.0 });
+
+      let lastAngVel = 0;
+      for (let i = 0; i < 20; i++) {
+        stepVehicle(state, steerInput, config, 1 / 60);
+        assert.ok(
+          state.angularVelocity >= lastAngVel,
+          `Angular velocity should accelerate monotonically: step ${i} (${state.angularVelocity}) vs prev (${lastAngVel})`
+        );
+        lastAngVel = state.angularVelocity;
+      }
+
+      // Reached near target turn rate after ~1/3 second
+      assert.ok(state.angularVelocity > config.turnRate * 0.85, "Should approach steady turn rate");
+    });
+
+    it("releasing steering preserves rotational momentum and decays smoothly", () => {
+      const config = getCarConfig("stadium");
+      const state = createVehicleState({ x: 500, y: 500, vx: 200, vy: 0, angle: 0, angularVelocity: 0, speed: 200 });
+      const steerInput = makeNeutralInput({ steer: 1.0 });
+
+      for (let i = 0; i < 30; i++) {
+        stepVehicle(state, steerInput, config, 1 / 60);
+      }
+
+      const peakAngVel = state.angularVelocity;
+      assert.ok(peakAngVel > 2.5, "Should have achieved high turning rate");
+
+      // Release steering (steer = 0)
+      const neutralInput = makeNeutralInput({ steer: 0 });
+      stepVehicle(state, neutralInput, config, 1 / 60);
+
+      // Must not drop instantly to 0 due to rotational inertia
+      assert.ok(state.angularVelocity > 1.5, `Angular velocity should retain momentum: got ${state.angularVelocity}`);
+      assert.ok(state.angularVelocity < peakAngVel, "Angular velocity should begin smooth deceleration");
+    });
+
+    it("high-speed steer taper clamps maximum turning rate at 500+ px/s", () => {
+      const config = getCarConfig("stadium");
+      const state = createVehicleState({ x: 500, y: 500, vx: 520, vy: 0, angle: 0, angularVelocity: 0, speed: 520 });
+      const steerInput = makeNeutralInput({ throttle: 1.0, steer: 1.0 });
+
+      for (let i = 0; i < 40; i++) {
+        stepVehicle(state, steerInput, config, 1 / 60);
+      }
+
+      // Peak turn rate should be tapered (clamped below untapered turnRate of 3.2)
+      assert.ok(
+        state.angularVelocity <= config.turnRate * 0.75,
+        `High-speed turn rate must be tapered, got ${state.angularVelocity} (turnRate: ${config.turnRate})`
+      );
+    });
+  });
+
+  describe("7. Trackmania Jump Ramp & Airborne Physics", () => {
+    const testRamp: JumpRamp = {
+      id: "ramp-test",
+      x: 500,
+      y: 500,
+      angle: 0,
+      width: 80,
+      length: 100,
+      height: 20,
+      launchBoost: 60,
+    };
+
+    it("driving onto ramp elevates vehicle z and sets pitch angle without launching", () => {
+      const state = createVehicleState({
+        x: 480, // localX = -20 (ramp goes from -50 to +50)
+        y: 500,
+        vx: 200,
+        vy: 0,
+        angle: 0,
+        speed: 200,
+      });
+
+      stepRampPhysics(state, [testRamp], 1 / 60);
+
+      assert.ok((state.z ?? 0) > 0, `Car z should be elevated on slope, got ${state.z}`);
+      assert.ok((state.z ?? 0) < 20, `Car z should be below lip height, got ${state.z}`);
+      assert.ok((state.pitch ?? 0) > 0, `Car pitch should be positive, got ${state.pitch}`);
+      assert.strictEqual(state.isAirborne, false, "Vehicle should not be airborne on slope");
+    });
+
+    it("reaching launch lip at speed launches car airborne with launch boost", () => {
+      const state = createVehicleState({
+        x: 540, // localX = +40 (lip trigger is >= 50 - 15 = 35)
+        y: 500,
+        vx: 200,
+        vy: 0,
+        angle: 0,
+        speed: 200,
+      });
+
+      stepRampPhysics(state, [testRamp], 1 / 60);
+
+      assert.strictEqual(state.isAirborne, true, "Vehicle must become airborne at launch lip");
+      // Launch boost was 60, speed was 200 -> initial vz ~ 200 * 0.45 + 60 = 150
+      assert.ok((state.vz ?? 0) > 100, `Launch vertical velocity should be high, got ${state.vz}`);
+    });
+
+    it("gravity pulls airborne vehicle back to ground and lands cleanly", () => {
+      const state = createVehicleState({
+        x: 600,
+        y: 500,
+        z: 15,
+        vz: 120,
+        isAirborne: true,
+        pitch: 0.2,
+      });
+
+      // Step physics until landing
+      let totalDt = 0;
+      for (let i = 0; i < 60; i++) {
+        stepRampPhysics(state, [testRamp], 1 / 60);
+        totalDt += 1 / 60;
+        if (!state.isAirborne) break;
+      }
+
+      assert.strictEqual(state.isAirborne, false, "Vehicle should have landed");
+      assert.strictEqual(state.z, 0, "Elevation must be 0 after landing");
+      assert.strictEqual(state.vz, 0, "Vertical velocity must be 0 after landing");
+      assert.strictEqual(state.pitch, 0, "Pitch must reset to 0 after landing");
+    });
+
+    it("driving in reverse against high drop lip from outside acts as a solid barrier", () => {
+      const state = createVehicleState({
+        x: 560, // outside ramp past lip at 550
+        y: 500,
+        vx: -150, // driving backward into the vertical back wall
+        vy: 0,
+        angle: Math.PI,
+        speed: 150,
+      });
+
+      stepRampPhysics(state, [testRamp], 1 / 60);
+
+      assert.ok(state.vx > 0, `Vehicle velocity should be deflected away from high lip, got ${state.vx}`);
+      assert.ok(state.x >= 565, `Vehicle should be pushed out away from lip, got ${state.x}`);
+    });
+
+    it("stepVehicle integrates ramp physics and airborne dynamics", () => {
+      const config = getCarConfig("stadium");
+      const state = createVehicleState({
+        x: 540,
+        y: 500,
+        vx: 250,
+        vy: 0,
+        angle: 0,
+        speed: 250,
+      });
+      const input = makeNeutralInput({ throttle: 1.0 });
+
+      // Step vehicle over test ramp
+      stepVehicle(state, input, config, 1 / 60, undefined, undefined, [testRamp]);
+
+      assert.strictEqual(state.isAirborne, true, "Vehicle should become airborne through stepVehicle");
+      assert.ok((state.z ?? 0) > 0, "Elevation should be positive");
+      assert.strictEqual(state.skidIntensity, 0, "Skid intensity must be 0 while airborne");
     });
   });
 });

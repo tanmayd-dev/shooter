@@ -569,6 +569,12 @@ export class GameRenderer {
       case 'rally':
         this.renderRallyCar(ctx, car);
         break;
+      case 'apex':
+        this.renderApexCar(ctx, car);
+        break;
+      case 'titan':
+        this.renderTitanCar(ctx, car);
+        break;
       case 'stadium':
       default:
         this.renderStadiumCar(ctx, car);
@@ -584,10 +590,10 @@ export class GameRenderer {
   }
 
   private renderCarWheels(ctx: CanvasRenderingContext2D, car: CarState): void {
-    const halfL = car.archetype === 'desert' ? 20 : car.archetype === 'stadium' ? 22 : 16;
-    const halfW = car.archetype === 'desert' ? 14 : car.archetype === 'stadium' ? 13 : 11;
-    const wheelW = car.archetype === 'desert' ? 12 : 10;
-    const wheelH = car.archetype === 'desert' ? 6 : 5;
+    const halfL = car.archetype === 'desert' || car.archetype === 'titan' ? 20 : car.archetype === 'stadium' || car.archetype === 'apex' ? 22 : 16;
+    const halfW = car.archetype === 'desert' || car.archetype === 'titan' ? 14 : car.archetype === 'stadium' || car.archetype === 'apex' ? 13 : 11;
+    const wheelW = car.archetype === 'desert' || car.archetype === 'titan' ? 12 : 10;
+    const wheelH = car.archetype === 'desert' || car.archetype === 'titan' ? 6 : 5;
     const steerAngle = (car.steer || 0) * 0.42;
 
     const drawWheel = (x: number, y: number, angle: number) => {
@@ -848,6 +854,122 @@ export class GameRenderer {
     ctx.strokeRect(-24, -10, 4, 20);
   }
 
+  /**
+   * Apex Spec: Sleek futuristic Aero-GT hypercar with swept winglets,
+   * violet glowing canopy visor, and dual jet turbines.
+   */
+  private renderApexCar(ctx: CanvasRenderingContext2D, _car: CarState): void {
+    // 1. Swept-back active aero winglets
+    ctx.fillStyle = '#100518';
+    ctx.strokeStyle = '#d000ff';
+    ctx.lineWidth = 1.5;
+    ctx.shadowColor = '#d000ff';
+    ctx.shadowBlur = 8;
+    // Upper winglet
+    ctx.beginPath();
+    ctx.moveTo(-4, -9);
+    ctx.lineTo(8, -19);
+    ctx.lineTo(2, -19);
+    ctx.lineTo(-14, -9);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    // Lower winglet
+    ctx.beginPath();
+    ctx.moveTo(-4, 9);
+    ctx.lineTo(8, 19);
+    ctx.lineTo(2, 19);
+    ctx.lineTo(-14, 9);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // 2. Sleek aerodynamic hypercar body
+    ctx.fillStyle = '#180726';
+    ctx.strokeStyle = '#d000ff';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(30, 0); // nose tip
+    ctx.lineTo(16, -6);
+    ctx.lineTo(-4, -10);
+    ctx.lineTo(-24, -8);
+    ctx.lineTo(-28, 0);
+    ctx.lineTo(-24, 8);
+    ctx.lineTo(-4, 10);
+    ctx.lineTo(16, 6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // 3. Canopy with glowing magenta visor
+    ctx.fillStyle = '#d000ff';
+    ctx.shadowColor = '#ff00ff';
+    ctx.shadowBlur = 12;
+    ctx.beginPath();
+    ctx.ellipse(2, 0, 10, 4.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 4. Dual rear jet turbine exhaust nozzles (violet plasma glow)
+    ctx.fillStyle = '#e040fb';
+    ctx.fillRect(-31, -7, 4, 4);
+    ctx.fillRect(-31, 3, 4, 4);
+
+    // 5. Rear aerodynamic GT wing
+    ctx.fillStyle = '#0f0518';
+    ctx.strokeStyle = '#d000ff';
+    ctx.lineWidth = 1.5;
+    ctx.fillRect(-27, -15, 5, 30);
+    ctx.strokeRect(-27, -15, 5, 30);
+  }
+
+  /**
+   * Titan Spec: Heavy tactical police interceptor cruiser with wrap-around
+   * steel bull-bar and overhead emergency red/blue strobe lightbar.
+   */
+  private renderTitanCar(ctx: CanvasRenderingContext2D, _car: CarState): void {
+    // 1. Heavy armored cruiser body
+    ctx.fillStyle = '#081426';
+    ctx.strokeStyle = '#0066ff';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = '#0066ff';
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.roundRect(-27, -13, 54, 26, 3);
+    ctx.fill();
+    ctx.stroke();
+
+    // 2. Heavy steel wrap-around push bumper / bull-bar on front
+    ctx.fillStyle = '#404c60';
+    ctx.strokeStyle = '#788ca6';
+    ctx.lineWidth = 1.5;
+    ctx.fillRect(27, -11, 4, 22);
+    ctx.strokeRect(27, -11, 4, 22);
+    // Rubber push bumper pads
+    ctx.fillStyle = '#11141c';
+    ctx.fillRect(30, -7, 2, 5);
+    ctx.fillRect(30, 2, 2, 5);
+
+    // 3. Armored cabin windscreen
+    ctx.fillStyle = '#050c18';
+    ctx.fillRect(-10, -9, 22, 18);
+
+    // 4. Overhead emergency police LED strobe lightbar on roof
+    // Lightbar base
+    ctx.fillStyle = '#11141c';
+    ctx.fillRect(-2, -9, 5, 18);
+    // Red LED (upper)
+    const flash = Math.sin(performance.now() * 0.02) > 0;
+    ctx.fillStyle = flash ? '#ff0033' : '#440011';
+    ctx.shadowColor = '#ff0033';
+    ctx.shadowBlur = flash ? 12 : 2;
+    ctx.fillRect(-1.5, -8, 4, 7);
+    // Blue LED (lower)
+    ctx.fillStyle = !flash ? '#0066ff' : '#001144';
+    ctx.shadowColor = '#0066ff';
+    ctx.shadowBlur = !flash ? 12 : 2;
+    ctx.fillRect(-1.5, 1, 4, 7);
+  }
+
   // ==========================================
   // STATUS EFFECTS (SHIELD / RAM / EMP)
   // ==========================================
@@ -1077,6 +1199,21 @@ export class GameRenderer {
             proj.y + Math.sin(sparkAngle) * sparkDist
           );
         }
+      } else if (proj.type === 'decoy') {
+        // Holographic Decoy ghost drone
+        ctx.save();
+        ctx.translate(proj.x, proj.y);
+        ctx.rotate(proj.angle);
+        const fade = Math.max(0, 1.0 - proj.lifetime / proj.maxLifetime);
+        ctx.globalAlpha = fade * (0.6 + Math.sin(performance.now() * 0.02) * 0.2);
+        ctx.strokeStyle = proj.color || '#d000ff';
+        ctx.lineWidth = 2;
+        ctx.shadowColor = '#d000ff';
+        ctx.shadowBlur = 15;
+        ctx.strokeRect(-16, -10, 32, 20);
+        ctx.fillStyle = 'rgba(208, 0, 255, 0.25)';
+        ctx.fillRect(-16, -10, 32, 20);
+        ctx.restore();
       }
 
       ctx.restore();

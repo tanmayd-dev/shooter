@@ -193,11 +193,15 @@ export class ParticleSystem {
 
     let flameColor = '#ff6b00';
     if (isBoosting) {
-      flameColor = archetype === 'stadium' ? '#00f0ff' : archetype === 'rally' ? '#bc13fe' : '#ff1361';
+      flameColor = archetype === 'stadium' ? '#00f0ff' : archetype === 'apex' ? '#d000ff' : archetype === 'titan' ? '#0066ff' : archetype === 'rally' ? '#bc13fe' : '#ff1361';
     } else if (archetype === 'stadium') {
       flameColor = '#00d2ff';
     } else if (archetype === 'desert') {
       flameColor = Math.random() > 0.4 ? '#ff3a00' : '#ffaa00';
+    } else if (archetype === 'apex') {
+      flameColor = '#d000ff';
+    } else if (archetype === 'titan') {
+      flameColor = '#0066ff';
     } else {
       flameColor = '#39ff14';
     }

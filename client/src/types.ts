@@ -17,7 +17,7 @@ export interface Vector2D {
 // Vehicle Archetypes & Configuration
 // ============================================================================
 
-export type CarType = "stadium" | "desert" | "rally";
+export type CarType = "stadium" | "desert" | "rally" | "apex" | "titan";
 export type CarArchetype = CarType;
 
 export interface ArchetypeDisplayStats {
@@ -69,6 +69,8 @@ export interface InputState {
   fireSpecial: boolean;         // Left-hand special weapon trigger (KeyS)
   abilityMobility: boolean;     // Left-hand mobility maneuver trigger (KeyD)
   abilityUtility: boolean;      // Left-hand tactical gadget trigger (KeyF)
+  turnaround?: boolean;         // 180° quick flip turnaround (KeyR / Backspace)
+  lookBack?: boolean;           // Rearview look-back camera (KeyB)
 }
 
 // ============================================================================
@@ -78,11 +80,15 @@ export interface InputState {
 export interface VehicleState {
   x: number;                    // Arena X position in px
   y: number;                    // Arena Y position in px
+  z?: number;                   // Vertical elevation above tarmac (0 = on ground)
   vx: number;                   // Linear velocity X component in px/s
   vy: number;                   // Linear velocity Y component in px/s
+  vz?: number;                  // Vertical launch velocity in px/s
   angle: number;                // Chassis heading angle in radians (0 = facing +X)
   angularVelocity: number;      // Current yaw rotation rate in rad/s
   isDrifting: boolean;          // True when vehicle lateral grip has broken
+  isAirborne?: boolean;         // True when launched airborne from ramps
+  pitch?: number;               // Incline/jump pitch angle
   driftAngle: number;           // Angular offset between velocity vector and chassis heading
   speed: number;                // Scalar magnitude of linear velocity in px/s
   skidIntensity: number;        // Skidmark and smoke intensity factor (0..1)
@@ -108,6 +114,8 @@ export interface CarState extends VehicleState {
   health: number;
   maxHealth: number;
   isAlive: boolean;
+  respawnTimer?: number;
+  respawnShieldDuration?: number;
   kills: number;
   deaths: number;
   score: number;
@@ -179,13 +187,29 @@ export interface FinishLine {
   y2: number;
 }
 
+export interface JumpRamp {
+  id: string;
+  x: number;
+  y: number;
+  angle: number;
+  width: number;
+  length: number;
+  height: number;
+  launchBoost?: number;
+}
+
 export interface StadiumTrack {
+  id?: string;
+  name?: string;
+  description?: string;
+  theme?: string;
   width: number;
   height: number;
   outerBorder: Vector2D[];
   innerBorder: Vector2D[];
   boostPads: BoostPad[];
   barriers: TrackBarrier[];
+  ramps?: JumpRamp[];
   finishLine: FinishLine;
 }
 
@@ -199,6 +223,7 @@ export type ProjectileKind =
   | "rail_beam"
   | "mine"
   | "emp_cloud"
+  | "decoy"
   | "pulse"
   | "missile"
   | "cannon"
@@ -208,7 +233,7 @@ export type ProjectileKind =
 
 export interface Projectile {
   id: string;
-  type: "bullet" | "rocket" | "rail_beam" | "mine" | "emp_cloud";
+  type: "bullet" | "rocket" | "rail_beam" | "mine" | "emp_cloud" | "decoy";
   x: number;
   y: number;
   vx: number;
@@ -307,6 +332,7 @@ export interface RoomState {
   code: string;
   hostId: string;
   players: LobbyPlayer[];
+  map?: string;
   state?: "waiting" | "starting" | "in_game" | "game_over";
   matchActive?: boolean;
   countdown?: number | null;

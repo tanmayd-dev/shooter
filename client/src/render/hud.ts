@@ -1,7 +1,7 @@
-import {
+import type {
   CarState,
   KillfeedEntry,
-} from '../types';
+} from '../types.ts';
 import { ARCHETYPE_CONFIGS } from '../physics/configs.ts';
 
 export type ScreenCoordProvider =
@@ -13,6 +13,37 @@ export type ScreenCoordProvider =
 export class HUDRenderer {
   private killfeed: KillfeedEntry[] = [];
   private readonly killfeedDuration: number = 4.5; // seconds
+
+  public round: number = 1;
+  public totalRounds: number = 3;
+  public mapName: string = 'neon_stadium';
+  public isTournamentComplete: boolean = false;
+  public podiumResults: Array<{ id?: string; name: string; kills: number; score: number; carType?: string }> | null = null;
+
+  public setTournamentState(round: number, totalRounds: number, mapName?: string): void {
+    this.round = round;
+    this.totalRounds = totalRounds;
+    if (mapName) {
+      this.mapName = mapName;
+    }
+  }
+
+  public setPodium(
+    complete: boolean,
+    scoreboard?: Array<{ id?: string; name: string; kills: number; score: number; carType?: string }>
+  ): void {
+    this.isTournamentComplete = complete;
+    if (scoreboard) {
+      this.podiumResults = scoreboard;
+    }
+  }
+
+  public resetTournament(): void {
+    this.round = 1;
+    this.totalRounds = 3;
+    this.isTournamentComplete = false;
+    this.podiumResults = null;
+  }
 
   public addKill(killerName: string, victimName: string, weapon: string): void {
     this.killfeed.push({
@@ -36,12 +67,30 @@ export class HUDRenderer {
     allCars: CarState[],
     matchTimeRemaining: number,
     countdown: number | null,
-    screenCoordsProvider?: ScreenCoordProvider
+    screenCoordsProvider?: ScreenCoordProvider,
+    tournamentInfo?: {
+      round?: number;
+      totalRounds?: number;
+      mapName?: string;
+      isTournamentComplete?: boolean;
+      scoreboard?: Array<{ id?: string; name: string; kills: number; score: number; carType?: string }>;
+    }
   ): void {
     ctx.save();
 
+    if (tournamentInfo) {
+      if (tournamentInfo.round !== undefined) this.round = tournamentInfo.round;
+      if (tournamentInfo.totalRounds !== undefined) this.totalRounds = tournamentInfo.totalRounds;
+      if (tournamentInfo.mapName !== undefined) this.mapName = tournamentInfo.mapName;
+      if (tournamentInfo.isTournamentComplete !== undefined) this.isTournamentComplete = tournamentInfo.isTournamentComplete;
+      if (tournamentInfo.scoreboard !== undefined) this.podiumResults = tournamentInfo.scoreboard;
+    }
+
     // 1. Top Center: Match Timer & Stadium Clock
     this.renderMatchTimer(ctx, width, matchTimeRemaining);
+
+    // 1b. Top Center Header: Tournament Round & Stadium Circuit Badge
+    this.renderTournamentHeader(ctx, width);
 
     // 2. Top Right: Killfeed Notifications
     this.renderKillfeed(ctx, width);
@@ -70,6 +119,16 @@ export class HUDRenderer {
 
       // Bottom Center: Action Abilities Cooldown Bar (A, S, D, F)
       this.renderAbilityBar(ctx, width, height, localCar);
+
+      // Centered Respawn Notification Overlay when Chassis is Destroyed
+      if (!localCar.isAlive) {
+        this.renderRespawnOverlay(ctx, width, height, localCar);
+      }
+    }
+
+    // 8. Grand Prix Podium Overlay (When tournament is complete or in podium state)
+    if (this.isTournamentComplete) {
+      this.renderGrandPrixPodium(ctx, width, height, allCars);
     }
 
     ctx.restore();
@@ -288,7 +347,7 @@ export class HUDRenderer {
 
     // Semi-transparent corner card placed at bottom-left corner directly above health bar
     const cardW = 264;
-    const cardH = 92;
+    const cardH = 112;
     const cardX = 16;
     const cardY = height >= 450 ? height - 117 - 10 - cardH : 140;
 
@@ -355,6 +414,32 @@ export class HUDRenderer {
     ctx.fillText('C', cardX + 85, row3Y);
     ctx.fillStyle = '#ffffff';
     ctx.fillText('(Toggle 3D Chase Cam / Stadium Cam)', cardX + 96, row3Y);
+
+    // Row 4: Recovery & Rear View
+    const row4Y = cardY + 84;
+    ctx.fillStyle = '#88a0c0';
+    ctx.fillText('TACTICAL:', cardX + 12, row4Y);
+    ctx.fillStyle = '#ffcc00';
+    ctx.fillText('R', cardX + 85, row4Y);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('(Flip 180°)', cardX + 96, row4Y);
+    ctx.fillStyle = '#ffcc00';
+    ctx.fillText('B', cardX + 174, row4Y);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('(Look Back)', cardX + 185, row4Y);
+
+    // Row 5: Voice Chat
+    const row5Y = cardY + 102;
+    ctx.fillStyle = '#88a0c0';
+    ctx.fillText('VOICE:', cardX + 12, row5Y);
+    ctx.fillStyle = '#39ff14';
+    ctx.fillText('V', cardX + 85, row5Y);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('(Push-to-Talk)', cardX + 96, row5Y);
+    ctx.fillStyle = '#ff4b1f';
+    ctx.fillText('M', cardX + 204, row5Y);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('(Mute)', cardX + 215, row5Y);
 
     ctx.restore();
   }
@@ -743,6 +828,64 @@ export class HUDRenderer {
   }
 
   // ==========================================
+  // TOURNAMENT ROUND & STADIUM CIRCUIT BADGE
+  // ==========================================
+  private renderTournamentHeader(ctx: CanvasRenderingContext2D, width: number): void {
+    ctx.save();
+    const centerX = width / 2;
+    const headerY = 56;
+
+    const round = this.round || 1;
+    const totalRounds = this.totalRounds || 3;
+    const mapName = (this.mapName || 'neon_stadium').toUpperCase();
+    const roundText = `ROUND ${round}/${totalRounds} — ${mapName}`;
+
+    ctx.font = '900 12px monospace, system-ui';
+    const textW = ctx.measureText(roundText).width;
+    const badgeW = textW + 48;
+    const badgeH = 26;
+    const badgeX = centerX - badgeW / 2;
+    const badgeY = headerY - badgeH / 2;
+
+    // Stadium circuit badge container
+    ctx.fillStyle = 'rgba(10, 14, 22, 0.90)';
+    ctx.strokeStyle = '#00f0ff';
+    ctx.lineWidth = 1.5;
+    ctx.shadowColor = '#00f0ff';
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.roundRect(badgeX, badgeY, badgeW, badgeH, 13);
+    ctx.fill();
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Mini stadium circuit icon pill
+    ctx.fillStyle = '#00f0ff';
+    ctx.font = 'bold 11px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('🏁', badgeX + 16, headerY);
+
+    // Divider dot
+    ctx.fillStyle = 'rgba(0, 240, 255, 0.4)';
+    ctx.beginPath();
+    ctx.arc(badgeX + 28, headerY, 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Render tournament round text in bright cyan
+    ctx.font = '900 12px monospace, system-ui';
+    ctx.fillStyle = '#00f0ff';
+    ctx.shadowColor = '#00f0ff';
+    ctx.shadowBlur = 8;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(roundText, centerX + 10, headerY);
+    ctx.shadowBlur = 0;
+
+    ctx.restore();
+  }
+
+  // ==========================================
   // SCOREBOARD & STATS
   // ==========================================
   private renderScoreboard(
@@ -821,6 +964,315 @@ export class HUDRenderer {
     ctx.fillStyle = '#ffffff';
     ctx.shadowBlur = 10;
     ctx.fillText(text, centerX, centerY);
+
+    ctx.restore();
+  }
+
+  // ==========================================
+  // RESPAWN NOTIFICATION OVERLAY
+  // ==========================================
+  private renderRespawnOverlay(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    car: CarState
+  ): void {
+    ctx.save();
+    const centerX = width / 2;
+    const centerY = height / 2;
+
+    const cardW = 460;
+    const cardH = 140;
+    const cardX = centerX - cardW / 2;
+    const cardY = centerY - cardH / 2;
+
+    // Dark high-contrast translucent background panel with red/cyan glow
+    ctx.fillStyle = 'rgba(8, 12, 22, 0.88)';
+    ctx.strokeStyle = '#ff3344';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = '#ff2200';
+    ctx.shadowBlur = 20;
+    ctx.beginPath();
+    ctx.roundRect(cardX, cardY, cardW, cardH, 8);
+    ctx.fill();
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Title: "CHASSIS DESTROYED" in bold red/orange
+    ctx.font = '900 32px monospace, system-ui';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ff4422';
+    ctx.shadowColor = '#ff2200';
+    ctx.shadowBlur = 14;
+    ctx.fillText('CHASSIS DESTROYED', centerX, centerY - 28);
+    ctx.shadowBlur = 0;
+
+    // Subtitle: "RESPAWNING IN X.X SECONDS" in bright cyan
+    const timerVal = Math.max(0, car.respawnTimer ?? 0);
+    const secStr = timerVal.toFixed(1);
+    ctx.font = 'bold 18px monospace, system-ui';
+    ctx.fillStyle = '#00f0ff';
+    ctx.shadowColor = '#00f0ff';
+    ctx.shadowBlur = 8;
+    ctx.fillText(`RESPAWNING IN ${secStr} SECONDS`, centerX, centerY + 14);
+    ctx.shadowBlur = 0;
+
+    // Timer Bar
+    const barW = 320;
+    const barH = 10;
+    const barX = centerX - barW / 2;
+    const barY = centerY + 36;
+    const maxTime = 3.5;
+    const progress = Math.max(0, Math.min(1.0, 1.0 - timerVal / maxTime));
+
+    ctx.fillStyle = 'rgba(20, 26, 38, 0.95)';
+    ctx.strokeStyle = 'rgba(0, 240, 255, 0.3)';
+    ctx.lineWidth = 1;
+    ctx.fillRect(barX, barY, barW, barH);
+    ctx.strokeRect(barX, barY, barW, barH);
+
+    ctx.fillStyle = '#00f0ff';
+    ctx.shadowColor = '#00f0ff';
+    ctx.shadowBlur = 10;
+    ctx.fillRect(barX, barY, barW * progress, barH);
+    ctx.shadowBlur = 0;
+
+    ctx.restore();
+  }
+
+  // ==========================================
+  // GRAND PRIX PODIUM OVERLAY
+  // ==========================================
+  public renderGrandPrixPodium(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    allCars: CarState[]
+  ): void {
+    ctx.save();
+
+    // 1. Full-screen dark tinted backdrop
+    ctx.fillStyle = 'rgba(6, 10, 18, 0.88)';
+    ctx.fillRect(0, 0, width, height);
+
+    const centerX = width / 2;
+    const centerY = height / 2;
+
+    const cardW = Math.min(740, width - 40);
+    const cardH = Math.min(480, height - 60);
+    const cardX = centerX - cardW / 2;
+    const cardY = centerY - cardH / 2;
+
+    // 2. Main Grand Prix Podium Card with Gold Glowing Border
+    ctx.fillStyle = 'rgba(10, 15, 26, 0.96)';
+    ctx.strokeStyle = '#ffd700';
+    ctx.lineWidth = 2.5;
+    ctx.shadowColor = '#ffd700';
+    ctx.shadowBlur = 28;
+    ctx.beginPath();
+    ctx.roundRect(cardX, cardY, cardW, cardH, 12);
+    ctx.fill();
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Subtle carbon mesh / inner accent lines
+    ctx.strokeStyle = 'rgba(255, 215, 0, 0.15)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cardX + 10, cardY + 10, cardW - 20, cardH - 20);
+
+    // 3. "TOURNAMENT CHAMPION" Banner with Gold Glowing Aura
+    ctx.font = '900 34px monospace, system-ui';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffd700';
+    ctx.shadowColor = '#ffd700';
+    ctx.shadowBlur = 24;
+    ctx.fillText('TOURNAMENT CHAMPION', centerX, cardY + 48);
+    ctx.shadowBlur = 0;
+
+    // Subtitle: GRAND PRIX PODIUM — FINAL RESULTS
+    ctx.font = 'bold 12px monospace, system-ui';
+    ctx.fillStyle = '#00f0ff';
+    ctx.shadowColor = '#00f0ff';
+    ctx.shadowBlur = 6;
+    ctx.fillText('GRAND PRIX PODIUM — 3-MAP CIRCUIT FINALS', centerX, cardY + 78);
+    ctx.shadowBlur = 0;
+
+    // 4. Extract and rank players
+    interface PodiumEntry {
+      name: string;
+      kills: number;
+      score: number;
+    }
+
+    let entries: PodiumEntry[] = [];
+    if (this.podiumResults && this.podiumResults.length > 0) {
+      entries = this.podiumResults.map((p) => ({
+        name: p.name,
+        kills: p.kills,
+        score: p.score,
+      }));
+    } else if (allCars && allCars.length > 0) {
+      entries = [...allCars].map((c) => ({
+        name: c.name,
+        kills: c.kills,
+        score: c.score,
+      }));
+    }
+
+    // Sort by cumulative score descending, then kills descending
+    entries.sort((a, b) => b.score - a.score || b.kills - a.kills);
+
+    const first = entries[0] || { name: 'CHAMPION', kills: 0, score: 0 };
+    const second = entries[1] || null;
+    const third = entries[2] || null;
+
+    // 5. Layout the 3 Podium Pedestals:
+    // 2nd Place (Left, Silver), 1st Place (Center, Gold, Elevated), 3rd Place (Right, Bronze)
+    const pedestalW = Math.min(200, (cardW - 80) / 3);
+    const gap = 16;
+    const baseY = cardY + cardH - 50;
+
+    // --- 1st Place (Center, Gold, Taller) ---
+    const p1H = 210;
+    const p1X = centerX - pedestalW / 2;
+    const p1Y = baseY - p1H;
+
+    ctx.fillStyle = 'rgba(25, 20, 10, 0.9)';
+    ctx.strokeStyle = '#ffd700';
+    ctx.lineWidth = 2.5;
+    ctx.shadowColor = '#ffd700';
+    ctx.shadowBlur = 18;
+    ctx.beginPath();
+    ctx.roundRect(p1X, p1Y, pedestalW, p1H, 8);
+    ctx.fill();
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Gold Trophy Icon & Badge
+    ctx.font = '36px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = '#ffd700';
+    ctx.shadowBlur = 14;
+    ctx.fillText('🏆', centerX, p1Y + 36);
+    ctx.shadowBlur = 0;
+
+    ctx.font = '900 14px monospace, system-ui';
+    ctx.fillStyle = '#ffd700';
+    ctx.fillText('1ST PLACE', centerX, p1Y + 74);
+
+    // 1st Place Pilot Name
+    ctx.font = 'bold 16px system-ui, sans-serif';
+    ctx.fillStyle = '#ffffff';
+    const firstDisplayName = first.name.length > 12 ? first.name.substring(0, 11) + '..' : first.name;
+    ctx.fillText(firstDisplayName, centerX, p1Y + 104);
+
+    // 1st Place Kills & Score
+    ctx.font = '900 13px monospace, system-ui';
+    ctx.fillStyle = '#ffd700';
+    ctx.fillText(`${first.score} PTS`, centerX, p1Y + 138);
+
+    ctx.font = 'bold 11px monospace, system-ui';
+    ctx.fillStyle = '#88a0c0';
+    ctx.fillText(`${first.kills} KILLS`, centerX, p1Y + 160);
+
+    // --- 2nd Place (Left, Silver Badge) ---
+    const p2H = 170;
+    const p2X = p1X - pedestalW - gap;
+    const p2Y = baseY - p2H;
+    const p2CenterX = p2X + pedestalW / 2;
+
+    ctx.fillStyle = 'rgba(18, 22, 32, 0.9)';
+    ctx.strokeStyle = '#e0e8f0';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = '#c0c8d8';
+    ctx.shadowBlur = 12;
+    ctx.beginPath();
+    ctx.roundRect(p2X, p2Y, pedestalW, p2H, 8);
+    ctx.fill();
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Silver Badge
+    ctx.font = '30px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = '#c0c8d8';
+    ctx.shadowBlur = 10;
+    ctx.fillText('🥈', p2CenterX, p2Y + 32);
+    ctx.shadowBlur = 0;
+
+    ctx.font = '900 13px monospace, system-ui';
+    ctx.fillStyle = '#e0e8f0';
+    ctx.fillText('2ND PLACE', p2CenterX, p2Y + 64);
+
+    // 2nd Place Pilot Name
+    ctx.font = 'bold 15px system-ui, sans-serif';
+    ctx.fillStyle = '#ffffff';
+    const secondName = second ? (second.name.length > 12 ? second.name.substring(0, 11) + '..' : second.name) : '---';
+    ctx.fillText(secondName, p2CenterX, p2Y + 90);
+
+    // 2nd Place Kills & Score
+    ctx.font = '900 12px monospace, system-ui';
+    ctx.fillStyle = '#e0e8f0';
+    ctx.fillText(second ? `${second.score} PTS` : '---', p2CenterX, p2Y + 118);
+
+    ctx.font = 'bold 11px monospace, system-ui';
+    ctx.fillStyle = '#88a0c0';
+    ctx.fillText(second ? `${second.kills} KILLS` : '', p2CenterX, p2Y + 138);
+
+    // --- 3rd Place (Right, Bronze Badge) ---
+    const p3H = 145;
+    const p3X = p1X + pedestalW + gap;
+    const p3Y = baseY - p3H;
+    const p3CenterX = p3X + pedestalW / 2;
+
+    ctx.fillStyle = 'rgba(24, 18, 14, 0.9)';
+    ctx.strokeStyle = '#cd7f32';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = '#cd7f32';
+    ctx.shadowBlur = 12;
+    ctx.beginPath();
+    ctx.roundRect(p3X, p3Y, pedestalW, p3H, 8);
+    ctx.fill();
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Bronze Badge
+    ctx.font = '28px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = '#cd7f32';
+    ctx.shadowBlur = 10;
+    ctx.fillText('🥉', p3CenterX, p3Y + 30);
+    ctx.shadowBlur = 0;
+
+    ctx.font = '900 13px monospace, system-ui';
+    ctx.fillStyle = '#e09860';
+    ctx.fillText('3RD PLACE', p3CenterX, p3Y + 58);
+
+    // 3rd Place Pilot Name
+    ctx.font = 'bold 14px system-ui, sans-serif';
+    ctx.fillStyle = '#ffffff';
+    const thirdName = third ? (third.name.length > 12 ? third.name.substring(0, 11) + '..' : third.name) : '---';
+    ctx.fillText(thirdName, p3CenterX, p3Y + 82);
+
+    // 3rd Place Kills & Score
+    ctx.font = '900 12px monospace, system-ui';
+    ctx.fillStyle = '#e09860';
+    ctx.fillText(third ? `${third.score} PTS` : '---', p3CenterX, p3Y + 106);
+
+    ctx.font = 'bold 11px monospace, system-ui';
+    ctx.fillStyle = '#88a0c0';
+    ctx.fillText(third ? `${third.kills} KILLS` : '', p3CenterX, p3Y + 124);
+
+    // Footer Hint
+    ctx.font = 'bold 11px monospace, system-ui';
+    ctx.fillStyle = '#88a0c0';
+    ctx.textAlign = 'center';
+    ctx.fillText('PRESS ESC TO RETURN TO LOBBY', centerX, cardY + cardH - 18);
 
     ctx.restore();
   }

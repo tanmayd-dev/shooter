@@ -9,8 +9,8 @@
  * - Arena boundary clamping and obstacle barrier collisions
  */
 
-import type { ArenaBounds, Barrier, CarConfig, CarType, InputState, StadiumTrack, VehicleState } from "../types.ts";
-import { DEFAULT_ARENA_BOUNDS, getCarConfig, PHYSICS_CONSTANTS } from "./configs.ts";
+import type { ArenaBounds, Barrier, CarConfig, CarType, InputState, JumpRamp, StadiumTrack, VehicleState } from "../types.ts";
+import { DEFAULT_ARENA_BOUNDS, DEFAULT_RAMPS, getCarConfig, PHYSICS_CONSTANTS } from "./configs.ts";
 
 // ============================================================================
 // Math & Vector Utilities
@@ -33,11 +33,15 @@ export function createVehicleState(initial: Partial<VehicleState> = {}): Vehicle
   return {
     x: initial.x ?? 0,
     y: initial.y ?? 0,
+    z: initial.z ?? 0,
     vx: initial.vx ?? 0,
     vy: initial.vy ?? 0,
+    vz: initial.vz ?? 0,
     angle: initial.angle ?? 0,
     angularVelocity: initial.angularVelocity ?? 0,
     isDrifting: initial.isDrifting ?? false,
+    isAirborne: initial.isAirborne ?? false,
+    pitch: initial.pitch ?? 0,
     driftAngle: initial.driftAngle ?? 0,
     speed: initial.speed ?? 0,
     skidIntensity: initial.skidIntensity ?? 0,
@@ -418,6 +422,129 @@ function resolveSegmentWallCollision(
 }
 
 // ============================================================================
+// Jump Ramp & Airborne Simulation
+// ============================================================================
+
+/**
+ * Resolves jump ramp physics: slope elevation, launch lip air-time boost, and high lip barrier collision.
+ * Returns true if vehicle interacted with ramp or is airborne.
+ */
+export function resolveRampPhysics(
+  state: VehicleState,
+  ramps: JumpRamp[] = DEFAULT_RAMPS,
+  dt: number = PHYSICS_CONSTANTS.fixedDt
+): boolean {
+  stepRampPhysics(state, ramps, dt);
+  return Boolean(state.isAirborne || (state.z !== undefined && state.z > 0));
+}
+
+/**
+ * Steps jump ramp physics and airborne gravity.
+ */
+export function stepRampPhysics(
+  state: VehicleState,
+  ramps: JumpRamp[] | undefined = DEFAULT_RAMPS,
+  dt: number = PHYSICS_CONSTANTS.fixedDt
+): void {
+  const activeRamps = ramps !== undefined ? ramps : DEFAULT_RAMPS;
+  let onSlope = false;
+
+  const vParallel = state.vx * Math.cos(state.angle) + state.vy * Math.sin(state.angle);
+
+  if (activeRamps && activeRamps.length > 0) {
+    for (const ramp of activeRamps) {
+      const halfL = ramp.length / 2;
+      const halfW = ramp.width / 2;
+
+      // Transform car position into ramp local coordinates:
+      // +X is along the ramp incline from low entry (-halfL) to high lip (+halfL)
+      // Y is lateral across ramp [-halfW, +halfW]
+      const dx = state.x - ramp.x;
+      const dy = state.y - ramp.y;
+      const cosR = Math.cos(-ramp.angle);
+      const sinR = Math.sin(-ramp.angle);
+      const localX = dx * cosR - dy * sinR;
+      const localY = dx * sinR + dy * cosR;
+
+      // Local velocity component along ramp incline
+      const vRampX = state.vx * cosR - state.vy * sinR;
+
+      // Solid barrier collision: driving into high drop lip from outside (cannot drive up back drop)
+      if (
+        (state.z ?? 0) < ramp.height - 1 &&
+        localX > halfL &&
+        localX <= halfL + 25 &&
+        Math.abs(localY) <= halfW + 10 &&
+        vRampX < 0
+      ) {
+        const pushOutX = halfL + 25;
+        state.x = ramp.x + pushOutX * Math.cos(ramp.angle) - localY * Math.sin(ramp.angle);
+        state.y = ramp.y + pushOutX * Math.sin(ramp.angle) + localY * Math.cos(ramp.angle);
+
+        const bounce = resolveWallBounce(
+          { vx: state.vx, vy: state.vy },
+          { x: Math.cos(ramp.angle), y: Math.sin(ramp.angle) },
+          0.4,
+          0.8
+        );
+        if (bounce.bounced) {
+          state.vx = bounce.vx;
+          state.vy = bounce.vy;
+          state.speed = Math.hypot(state.vx, state.vy);
+        }
+        continue;
+      }
+
+      // Check if inside ramp 2D bounding area
+      if (Math.abs(localY) <= halfW + 10 && Math.abs(localX) <= halfL) {
+        // If moving forward along the ramp (localX increasing towards +halfL)
+        if (vRampX > 0 || vParallel > 0) {
+          // Reaching launch lip: localX >= halfL - 15 and speed > 100
+          if (!state.isAirborne && localX >= halfL - 15 && (vParallel > 100 || vRampX > 100 || state.speed > 100)) {
+            state.isAirborne = true;
+            state.pitch = Math.atan2(ramp.height, ramp.length);
+            const launchBoost = ramp.launchBoost ?? 80;
+            state.vz = Math.max(state.vz ?? 0, state.speed * 0.45 + launchBoost);
+          } else if (!state.isAirborne) {
+            // Driving on slope
+            onSlope = true;
+            const slopeProgress = (localX + halfL) / ramp.length;
+            const rampSurfaceZ = Math.max(0, Math.min(ramp.height, slopeProgress * ramp.height));
+            state.z = Math.max(state.z ?? 0, rampSurfaceZ);
+            state.pitch = Math.atan2(ramp.height, ramp.length);
+          }
+        }
+      }
+    }
+  }
+
+  // If car was on slope and drove off without reaching launch threshold, or is in air
+  if (!onSlope && (state.z ?? 0) > 0 && !state.isAirborne) {
+    state.isAirborne = true;
+  }
+
+  // Airborne physics under gravity
+  if (state.isAirborne) {
+    const gravity = 450;
+    state.vz = (state.vz ?? 0) - gravity * dt;
+    state.z = (state.z ?? 0) + (state.vz ?? 0) * dt;
+
+    // Pitch levels off during descent
+    if (state.pitch && state.vz !== undefined && state.vz < 0) {
+      state.pitch = Math.max(0, state.pitch - dt * 1.2);
+    }
+
+    // Landing: When state.z <= 0
+    if (state.z <= 0) {
+      state.z = 0;
+      state.vz = 0;
+      state.isAirborne = false;
+      state.pitch = 0;
+    }
+  }
+}
+
+// ============================================================================
 // Vehicle Simulation Engine
 // ============================================================================
 
@@ -430,7 +557,8 @@ export function stepVehicle(
   config: CarConfig,
   dt: number = PHYSICS_CONSTANTS.fixedDt,
   arena?: ArenaBounds,
-  barriers?: Barrier[]
+  barriers?: Barrier[],
+  ramps?: JumpRamp[]
 ): VehicleState {
   // 1. Compute current heading unit vectors
   // u_fwd is along chassis orientation (theta)
@@ -461,17 +589,28 @@ export function stepVehicle(
 
   // Reverse steering behaves realistically when driving backward
   const steerDirection = vParallel < -5 ? -1 : 1;
-  let angularVel = input.steer * config.turnRate * speedSteerFactor * steerDirection;
+
+  // Calculate speed-based steering clamp: at high speed (currentSpeed > 300), taper target turn rate
+  const highSpeedFactor = currentSpeed > 300
+    ? Math.max(PHYSICS_CONSTANTS.highSpeedSteerTaper ?? 0.65, 1.0 - (currentSpeed - 300) / (config.maxSpeed * 1.5))
+    : 1.0;
+
+  // Target angular velocity based on input, speed factor, and high-speed taper
+  let targetAngularVel = input.steer * config.turnRate * speedSteerFactor * steerDirection * highSpeedFactor;
 
   // 4. Drift Initiation & Maintenance
   // Condition: When braking while steering at speed > 100 px/s, grip breaks and isDrifting = true
   const isBrakingWithSteer = input.brake && Math.abs(input.steer) > 0.05;
-  if (isBrakingWithSteer && currentSpeed > PHYSICS_CONSTANTS.driftTriggerSpeed) {
+  if (!state.isAirborne && isBrakingWithSteer && currentSpeed > PHYSICS_CONSTANTS.driftTriggerSpeed) {
     state.isDrifting = true;
   }
 
   // 5. Lateral Grip vs Drift Slip Dynamics
-  if (!state.isDrifting) {
+  if (state.isAirborne) {
+    // In the air, tire grip damping is disabled or reduced (momentum carries), skidIntensity is 0
+    vPerp *= Math.exp(-0.5 * dt);
+    state.skidIntensity = 0;
+  } else if (!state.isDrifting) {
     // NORMAL GRIP: Lateral velocity is heavily damped by gripRatio
     // Damping eliminates lateral sliding quickly so car travels where wheels point
     const gripDamping = Math.exp(-PHYSICS_CONSTANTS.normalLateralDamping * config.gripRatio * dt);
@@ -505,7 +644,7 @@ export function stepVehicle(
         // Correct chassis angle smoothly toward motion direction
         const velAngle = Math.atan2(state.vy, state.vx);
         const angleDiff = normalizeAngle(velAngle - state.angle);
-        angularVel += Math.sign(angleDiff) * Math.min(Math.abs(angleDiff) * 3.0, config.turnRate * 0.7);
+        targetAngularVel += Math.sign(angleDiff) * Math.min(Math.abs(angleDiff) * 3.0, config.turnRate * 0.7);
       }
 
       // Damp lateral velocity under throttle recovery
@@ -579,10 +718,20 @@ export function stepVehicle(
   // 7. Recompose linear velocity vector
   state.vx = vParallel * uFwdX + vPerp * uRightX;
   state.vy = vParallel * uFwdY + vPerp * uRightY;
+
+  // Enforce absolute maximum velocity ceiling (top boosted speed ~1.5x maxSpeed)
+  const maxAllowedSpeed = config.maxSpeed * 1.5;
+  const rawSpeed = Math.hypot(state.vx, state.vy);
+  if (rawSpeed > maxAllowedSpeed) {
+    const scale = maxAllowedSpeed / rawSpeed;
+    state.vx *= scale;
+    state.vy *= scale;
+  }
   state.speed = Math.hypot(state.vx, state.vy);
 
-  // 8. Update chassis orientation angle
-  state.angularVelocity = angularVel;
+  // 8. Update chassis orientation angle with rotational acceleration / inertia
+  const steerResponse = PHYSICS_CONSTANTS.steerResponseRate ?? 7.5;
+  state.angularVelocity += (targetAngularVel - state.angularVelocity) * Math.min(1.0, steerResponse * dt);
   state.angle = normalizeAngle(state.angle + state.angularVelocity * dt);
 
   // 9. Calculate drift slip angle and skid intensity
@@ -593,7 +742,9 @@ export function stepVehicle(
     state.driftAngle = 0;
   }
 
-  if (state.isDrifting) {
+  if (state.isAirborne) {
+    state.skidIntensity = 0;
+  } else if (state.isDrifting) {
     const slipFactor = Math.abs(vPerp) / 100.0;
     const angleFactor = Math.abs(state.driftAngle) / (Math.PI / 2);
     state.skidIntensity = Math.min(1.0, Math.max(0.35, slipFactor * 0.7 + angleFactor * 0.3));
@@ -607,7 +758,10 @@ export function stepVehicle(
   state.x += state.vx * dt;
   state.y += state.vy * dt;
 
-  // 11. Environment collisions: arena boundary reflection and barrier resolution
+  // 11. Jump Ramp Physics
+  stepRampPhysics(state, ramps, dt);
+
+  // 12. Environment collisions: arena boundary reflection and barrier resolution
   let bounced = false;
   if (arena) {
     bounced = resolveArenaBounds(state, config.hitboxRadius, arena) || bounced;
@@ -653,9 +807,10 @@ export class Vehicle {
     input: InputState,
     dt: number = PHYSICS_CONSTANTS.fixedDt,
     arena?: ArenaBounds,
-    barriers?: Barrier[]
+    barriers?: Barrier[],
+    ramps?: JumpRamp[]
   ): VehicleState {
-    return stepVehicle(this.state, input, this.config, dt, arena, barriers);
+    return stepVehicle(this.state, input, this.config, dt, arena, barriers, ramps);
   }
 
   /**

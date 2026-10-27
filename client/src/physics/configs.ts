@@ -3,7 +3,7 @@
  * Inspired by Trackmania driving dynamics: Stadium, Desert, and Rally specs.
  */
 
-import type { ArenaBounds, CarConfig, CarType } from "../types.ts";
+import type { ArenaBounds, CarConfig, CarType, JumpRamp } from "../types.ts";
 
 export const CAR_CONFIGS: Record<CarType, CarConfig> = {
   stadium: {
@@ -15,7 +15,7 @@ export const CAR_CONFIGS: Record<CarType, CarConfig> = {
     topSpeed: 520,
     acceleration: 560,
     reverseSpeed: 190,
-    turnRate: 3.6,
+    turnRate: 3.2,
     gripRatio: 0.96,
     driftFrictionRatio: 0.82,
     mass: 1.0,
@@ -25,10 +25,10 @@ export const CAR_CONFIGS: Record<CarType, CarConfig> = {
     specialCooldown: 4.0,    // Micro-missile salvo
     mobilityCooldown: 6.0,   // Air-brake drift snap
     utilityCooldown: 12.0,   // Kinetic deflector shield
-    primaryWeaponName: "Pulse Blaster",
-    specialAbilityName: "Micro-Missile Salvo",
+    primaryWeaponName: "Pulse Blaster (Forward Rapid)",
+    specialAbilityName: "Missile Salvo (Forward 4-Rocket)",
     mobilityAbilityName: "Air-Brake Drift Snap",
-    tacticalGadgetName: "Deflector Shield",
+    tacticalGadgetName: "Deflector Shield (360° Bubble)",
     stats: {
       topSpeed: 70,
       grip: 96,
@@ -56,7 +56,7 @@ export const CAR_CONFIGS: Record<CarType, CarConfig> = {
     topSpeed: 620,
     acceleration: 460,
     reverseSpeed: 150,
-    turnRate: 2.4,
+    turnRate: 2.2,
     gripRatio: 0.88,
     driftFrictionRatio: 0.70,
     mass: 1.6,
@@ -66,10 +66,10 @@ export const CAR_CONFIGS: Record<CarType, CarConfig> = {
     specialCooldown: 5.5,    // Ramming overdrive charge
     mobilityCooldown: 8.0,   // Twin-turbo burner
     utilityCooldown: 10.0,   // Caltrop mines
-    primaryWeaponName: "Heavy Autocannon",
-    specialAbilityName: "Ram Overdrive",
-    mobilityAbilityName: "Twin-Turbo Burner",
-    tacticalGadgetName: "Caltrop Mines",
+    primaryWeaponName: "Heavy Autocannon (Forward)",
+    specialAbilityName: "Ram Overdrive (Forward Charge)",
+    mobilityAbilityName: "Twin-Turbo Burner (Nitro Boost)",
+    tacticalGadgetName: "Caltrop Mines (Deploys Behind)",
     stats: {
       topSpeed: 95,
       grip: 75,
@@ -97,7 +97,7 @@ export const CAR_CONFIGS: Record<CarType, CarConfig> = {
     topSpeed: 490,
     acceleration: 640,
     reverseSpeed: 210,
-    turnRate: 4.2,
+    turnRate: 3.6,
     gripRatio: 0.80,
     driftFrictionRatio: 0.55,
     mass: 0.75,
@@ -107,10 +107,10 @@ export const CAR_CONFIGS: Record<CarType, CarConfig> = {
     specialCooldown: 6.0,    // Overcharge beam
     mobilityCooldown: 4.5,   // 180° slide pivot
     utilityCooldown: 9.0,    // EMP smoke screen
-    primaryWeaponName: "Rail Slug",
-    specialAbilityName: "Overcharge Beam",
-    mobilityAbilityName: "180° Slide Pivot",
-    tacticalGadgetName: "EMP Smoke Screen",
+    primaryWeaponName: "Rail Slug (Forward Kinetic Bolt)",
+    specialAbilityName: "Overcharge Beam (Forward Piercing Laser)",
+    mobilityAbilityName: "180° Slide Pivot (Reverse Turnaround)",
+    tacticalGadgetName: "EMP Smoke Screen (Deploys Behind)",
     stats: {
       topSpeed: 65,
       grip: 60,
@@ -127,6 +127,88 @@ export const CAR_CONFIGS: Record<CarType, CarConfig> = {
       "Fragile chassis with lowest maximum health",
       "Lightweight body easily deflected by barrier impacts",
       "Demands precise counter-steer control during high-speed drifts",
+    ],
+  },
+
+  apex: {
+    name: "Apex Spec",
+    specName: "Apex",
+    description: "Aero-GT aerial acrobat engineered for high-altitude ramp launches, flak bursts, and sonic repulsor shockwaves.",
+    color: "#d000ff", // Neon Violet / Magenta
+    maxSpeed: 580,
+    topSpeed: 580,
+    acceleration: 580,
+    reverseSpeed: 180,
+    turnRate: 3.4,
+    gripRatio: 0.88,
+    driftFrictionRatio: 0.60,
+    mass: 0.85,
+    maxHealth: 95,
+    hitboxRadius: 18,
+    primaryCooldown: 0.38,
+    specialCooldown: 5.0,
+    mobilityCooldown: 4.0,
+    utilityCooldown: 8.0,
+    primaryWeaponName: "Plasma Flak (Forward Shotgun Spread)",
+    specialAbilityName: "Sonic Repulsor (360° Deflection Blast)",
+    mobilityAbilityName: "Aero Thruster Jump (Vertical Launch)",
+    tacticalGadgetName: "Holo Decoy (Ghost Drone)",
+    stats: {
+      topSpeed: 88,
+      grip: 80,
+      driftSlip: 70,
+      armor: 55,
+      turnRate: 88,
+    },
+    strengths: [
+      "Devastating point-blank burst scatter damage",
+      "Deflects incoming homing missiles and taser darts via sonic repulsor",
+      "Superior ramp jump distance and vertical leap mobility",
+    ],
+    weaknesses: [
+      "Low damage at long distances beyond flak cone spread",
+      "Vulnerable to high-velocity linear snipers (Rally)",
+    ],
+  },
+
+  titan: {
+    name: "Titan Spec",
+    specName: "Titan",
+    description: "Heavily armored tactical police interceptor specialized in crowd lockdown, energy siphoning, and gravity tethers.",
+    color: "#0066ff", // Tactical Cobalt Blue
+    maxSpeed: 500,
+    topSpeed: 500,
+    acceleration: 520,
+    reverseSpeed: 170,
+    turnRate: 2.6,
+    gripRatio: 0.90,
+    driftFrictionRatio: 0.65,
+    mass: 1.3,
+    maxHealth: 125,
+    hitboxRadius: 21,
+    primaryCooldown: 0.28,
+    specialCooldown: 6.0,
+    mobilityCooldown: 5.0,
+    utilityCooldown: 9.0,
+    primaryWeaponName: "Taser Dart (Forward Speed Slow)",
+    specialAbilityName: "Energy Siphon (Channeled HP Drain)",
+    mobilityAbilityName: "Gravity Harpoon (Arrests Target Speed)",
+    tacticalGadgetName: "Disruptor EMP (Radial Weapon Jammer)",
+    stats: {
+      topSpeed: 72,
+      grip: 85,
+      driftSlip: 60,
+      armor: 85,
+      turnRate: 65,
+    },
+    strengths: [
+      "Energy siphon continuously drains enemy HP and repairs own chassis",
+      "Harpoon tether halts agile speedsters in their tracks",
+      "Disruptor EMP disables enemy shields and weapon systems",
+    ],
+    weaknesses: [
+      "Moderate top speed; out-accelerated on long straightaways",
+      "Vulnerable to airborne vertical jump strikes (Apex)",
     ],
   },
 };
@@ -157,7 +239,11 @@ export const PHYSICS_CONSTANTS = {
   /** Speed threshold below which drift state automatically cancels */
   driftExitSpeed: 65,
   /** Normal lateral grip damping rate multiplier */
-  normalLateralDamping: 24.0,
+  normalLateralDamping: 10.5,
+  /** Angular acceleration response rate for smooth rotational momentum */
+  steerResponseRate: 7.5,
+  /** High speed steering clamp taper factor */
+  highSpeedSteerTaper: 0.65,
   /** Drift lateral damping rate multiplier */
   driftLateralDamping: 3.2,
   /** Rate at which forward throttle aligns velocity vector during drift recovery */
@@ -186,3 +272,8 @@ export const DEFAULT_ARENA_BOUNDS: ArenaBounds = {
   width: 2400,
   height: 1600,
 };
+
+export const DEFAULT_RAMPS: JumpRamp[] = [
+  { id: "ramp-1", x: 1950, y: 380, angle: 0, width: 85, length: 110, height: 18, launchBoost: 80 },
+  { id: "ramp-2", x: 1950, y: 2020, angle: Math.PI, width: 85, length: 110, height: 18, launchBoost: 80 },
+];

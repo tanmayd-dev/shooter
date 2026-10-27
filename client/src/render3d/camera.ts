@@ -36,6 +36,7 @@ export class CameraController3D {
 
   // Screen shake / trauma impulse
   public trauma: number = 0;
+  public lookBack: boolean = false;
 
   // Keybind listener cleanup
   private keyListener: ((e: KeyboardEvent) => void) | null = null;
@@ -151,15 +152,17 @@ export class CameraController3D {
     // ==========================================
     // 1. CHASE CAMERA CALCULATION (Trackmania Cam 1)
     // ==========================================
-    // Camera is placed behind the car along the reverse forward vector
-    const chaseCamX = carX - forwardX * this.chaseDistance;
-    const chaseCamZ = carZ - forwardZ * this.chaseDistance;
+    // Camera is placed behind the car along the reverse forward vector (or front if lookBack)
+    const camDir = this.lookBack ? 1.0 : -1.0;
+    const lookDir = this.lookBack ? -1.0 : 1.0;
+    const chaseCamX = carX + forwardX * this.chaseDistance * camDir;
+    const chaseCamZ = carZ + forwardZ * this.chaseDistance * camDir;
     const chaseCamY = carY + this.chaseElevation;
 
-    // Look target is ahead of vehicle along forward vector + dynamic velocity lead
+    // Look target is ahead of vehicle along forward vector (or behind if lookBack) + dynamic velocity lead
     const leadDist = 38 + speedRatio * 45;
-    const chaseLookX = carX + forwardX * leadDist + target.vx * 0.05;
-    const chaseLookZ = carZ + forwardZ * leadDist + target.vy * 0.05;
+    const chaseLookX = carX + forwardX * leadDist * lookDir + target.vx * 0.05;
+    const chaseLookZ = carZ + forwardZ * leadDist * lookDir + target.vy * 0.05;
     const chaseLookY = carY + 10;
 
     // ==========================================

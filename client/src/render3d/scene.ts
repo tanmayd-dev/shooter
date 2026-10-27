@@ -15,6 +15,7 @@ export class Renderer3D {
   public cameraController: CameraController3D;
   public carManager: CarModelManager;
   public track3D: Track3D | null = null;
+  private currentTrackId: string | null = null;
 
   public domElement: HTMLCanvasElement;
 
@@ -22,6 +23,7 @@ export class Renderer3D {
   private floodlights: FloodlightTower[] = [];
   private dirSun: THREE.DirectionalLight | null = null;
   private ambientLight: THREE.AmbientLight | null = null;
+  private hemiLight: THREE.HemisphereLight | null = null;
 
   constructor(canvas?: HTMLCanvasElement, width?: number, height?: number) {
     const w = width ?? (canvas ? canvas.width : (typeof window !== 'undefined' ? window.innerWidth : 1920));
@@ -38,16 +40,16 @@ export class Renderer3D {
     this.renderer.setSize(w, h, false);
     this.renderer.setPixelRatio(typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 2) : 1);
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.15;
+    this.renderer.toneMappingExposure = 1.35;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     this.domElement = this.renderer.domElement;
 
-    // 2. Initialize Scene with dark cyber/stadium fog (#0a0c16)
+    // 2. Initialize Scene with lighter, distant fog and visible night stadium sky
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0a0c16);
-    this.scene.fog = new THREE.FogExp2(0x0a0c16, 0.00032);
+    this.scene.background = new THREE.Color(0x121728);
+    this.scene.fog = new THREE.Fog(0x181e34, 3000, 7500);
 
     // 3. Initialize Lighting
     this.setupLighting();
@@ -64,15 +66,19 @@ export class Renderer3D {
   // LIGHTING SETUP
   // ==========================================================================
   private setupLighting(): void {
-    // 1. Ambient Light with cool cyan tint (#112233)
-    this.ambientLight = new THREE.AmbientLight(0x112233, 1.25);
+    // 1. Hemisphere Light for rich sky/ground ambient fill
+    this.hemiLight = new THREE.HemisphereLight(0x7da4e8, 0x242d44, 1.4);
+    this.scene.add(this.hemiLight);
+
+    // 2. Ambient Light with balanced stadium tone
+    this.ambientLight = new THREE.AmbientLight(0x384a6c, 1.5);
     this.scene.add(this.ambientLight);
 
-    // 2. Directional Sunlight casting shadows
+    // 3. Directional Sunlight casting shadows (warm stadium floodlight)
     const arenaCenterX = 1800;
     const arenaCenterZ = 1200;
 
-    const sun = new THREE.DirectionalLight(0xfff6ee, 1.6);
+    const sun = new THREE.DirectionalLight(0xfff2e6, 2.2);
     sun.position.set(arenaCenterX + 700, 1500, arenaCenterZ + 500);
     sun.target.position.set(arenaCenterX, 0, arenaCenterZ);
     sun.castShadow = true;
@@ -204,7 +210,8 @@ export class Renderer3D {
   // ==========================================================================
   // PUBLIC CONTROLS & CAMERA METHODS
   // ==========================================================================
-  public updateCamera(target: CarState | null, dt: number): void {
+  public updateCamera(target: CarState | null, dt: number, lookBack: boolean = false): void {
+    this.cameraController.lookBack = lookBack;
     this.cameraController.update(target, dt);
   }
 
@@ -245,8 +252,14 @@ export class Renderer3D {
   ): void {
     this.totalTime += dt;
 
-    // 1. Build or maintain 3D track mesh
-    if (!this.track3D) {
+    // 1. Build or maintain 3D track mesh (rebuilding if map changes)
+    const trackId = track.id || 'neon_stadium';
+    if (!this.track3D || this.currentTrackId !== trackId) {
+      if (this.track3D) {
+        this.scene.remove(this.track3D.group);
+        this.track3D.dispose();
+      }
+      this.currentTrackId = trackId;
       this.track3D = new Track3D(track);
       this.scene.add(this.track3D.group);
     }
@@ -283,6 +296,10 @@ export class Renderer3D {
     if (this.ambientLight) {
       this.ambientLight.dispose();
       this.scene.remove(this.ambientLight);
+    }
+    if (this.hemiLight) {
+      this.hemiLight.dispose();
+      this.scene.remove(this.hemiLight);
     }
 
     this.renderer.dispose();

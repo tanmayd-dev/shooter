@@ -101,7 +101,7 @@ test('3D Camera Controller - Chase Cam, Stadium Cam & Dual-Mode Controls', () =>
 });
 
 test('3D Car Models - Procedural Archetypes & Wheel Steering', () => {
-  const archetypes = ['stadium', 'desert', 'rally'] as const;
+  const archetypes = ['stadium', 'desert', 'rally', 'apex', 'titan'] as const;
 
   for (const arch of archetypes) {
     const model = new Car3DModel(arch);
@@ -284,6 +284,128 @@ test('3D CarModelManager - Full Simulation Update Loop', () => {
 
   manager.update(cars, projectiles, 0.016, 1.0);
   assert.ok(manager.group.children.length > 0);
+
+  manager.dispose();
+});
+
+test('3D Car Models - Elevation (z), Incline Pitch & Airborne Skidmark Suppression', () => {
+  const model = new Car3DModel('rally');
+
+  const airborneCar: CarState = {
+    id: 'airborne-01',
+    name: 'JUMPER',
+    archetype: 'rally',
+    x: 1200,
+    y: 800,
+    z: 42,
+    pitch: 0.28,
+    vx: 600,
+    vy: 0,
+    vz: 50,
+    angle: 0.5,
+    angularVelocity: 0,
+    steer: 0,
+    throttle: 1,
+    handbrake: false,
+    speed: 600,
+    isDrifting: true,
+    isAirborne: true,
+    driftAngle: 0.2,
+    skidIntensity: 0.9,
+    health: 85,
+    maxHealth: 85,
+    isAlive: true,
+    kills: 0,
+    deaths: 0,
+    score: 0,
+    shieldActive: false,
+    shieldDuration: 0,
+    ramActive: false,
+    ramDuration: 0,
+    boostActive: false,
+    boostDuration: 0,
+    empDisrupted: false,
+    empDuration: 0,
+    primaryCooldown: 0,
+    specialCooldown: 0,
+    mobilityCooldown: 0,
+    gadgetCooldown: 0,
+  };
+
+  model.update(airborneCar, 0.016, 1.0);
+
+  // Elevation and pitch checks
+  assert.equal(model.group.position.x, 1200);
+  assert.equal(model.group.position.y, 42); // car.z supported
+  assert.equal(model.group.position.z, 800);
+  assert.equal(model.group.rotation.z, 0.28); // car.pitch supported
+
+  // Airborne skidmark suppression check
+  const manager = new CarModelManager();
+  const carModels = new Map<string, Car3DModel>();
+  carModels.set(airborneCar.id, model);
+
+  // First frame stores contacts or suppresses
+  manager.skidmarks.update([airborneCar], carModels, 0.016);
+  // Second frame airborne should not generate skid segments
+  airborneCar.x += 10;
+  model.update(airborneCar, 0.016, 1.016);
+  manager.skidmarks.update([airborneCar], carModels, 0.016);
+
+  // Skidmark geometry draw range should remain 0 when airborne
+  assert.equal(manager.skidmarks.mesh.geometry.drawRange.count, 0);
+
+  model.dispose();
+  manager.dispose();
+});
+
+test('3D Combat Visuals - Rally Car Overcharge Rail Beam (Problem 9)', () => {
+  const manager = new CarModelManager();
+
+  const beamProj: Projectile = {
+    id: 'rail-beam-test',
+    type: 'rail_beam',
+    x: 1000,
+    y: 500,
+    startX: 1000,
+    startY: 500,
+    endX: 2400,
+    endY: 500,
+    vx: 0,
+    vy: 0,
+    angle: 0,
+    radius: 12,
+    damage: 65,
+    ownerId: 'car-rally',
+    lifetime: 0.1,
+    maxLifetime: 0.35,
+  };
+
+  manager.update([], [beamProj], 0.016, 1.0);
+
+  // Find rail beam visual group
+  const beamGroup = manager.projectiles.group.children[0];
+  assert.ok(beamGroup, 'Rail beam visual group should exist');
+
+  // Verify position at bumper (1000, 6, 500)
+  assert.equal(beamGroup.position.x, 1000);
+  assert.equal(beamGroup.position.z, 500);
+
+  // Check core beam cylinder
+  const core = beamGroup.getObjectByName('railCore');
+  assert.ok(core, 'railCore mesh should exist');
+  // Starts at car bumper (+0) and extends forward to +1400 (center at 700)
+  assert.equal(core.position.x, 700);
+
+  // Check outer glow sheath
+  const sheath = beamGroup.getObjectByName('railSheath');
+  assert.ok(sheath, 'railSheath mesh should exist');
+  assert.equal(sheath.position.x, 700);
+
+  // Check muzzle shockwave ring
+  const ring = beamGroup.getObjectByName('railRing');
+  assert.ok(ring, 'railRing muzzle mesh should exist');
+  assert.equal(ring.position.x, 0); // Muzzle ring at bumper (x = 0)
 
   manager.dispose();
 });
